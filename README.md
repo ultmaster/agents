@@ -69,3 +69,17 @@ project values in the project that owns them.
 Never commit credentials, generated caches, or raw conversation transcripts.
 Validate every changed skill with the skill validator and test bundled scripts
 before committing it.
+
+## Verify
+
+The deterministic test suite runs on Linux and requires Bash 5, Python 3.11 or
+newer, `skills-ref==0.1.1`, Git, ShellCheck, curl, file, jq, lsof, ripgrep,
+`setsid`, and `ss`. Run the same entry point used by GitHub Actions:
+
+```bash
+./tests/run.sh
+```
+
+The suite validates every skill, exercises the installer in disposable homes,
+and tests bundled helpers without credentials or live GitHub and CircleCI API
+calls.

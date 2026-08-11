@@ -188,7 +188,7 @@ default_branch() {
   [[ -n "${remote}" ]] || return 1
   ref="$(git symbolic-ref --quiet --short "refs/remotes/${remote}/HEAD" 2>/dev/null || true)"
   [[ -n "${ref}" ]] || return 1
-  printf '%s\n' "${ref#${remote}/}"
+  printf '%s\n' "${ref#"${remote}"/}"
 }
 
 cmd_list() {
@@ -295,7 +295,7 @@ cmd_await() {
     die "cannot discover a branch; pass --branch or --sha"
   [[ -n "${label}" ]] || label="${workflow:-CI}"
 
-  local repo run_id="" elapsed=0
+  local repo run_id="" deadline sleep_for
   repo="$(resolve_repo)"
   local -a find_args=(gh run list --repo "${repo}" --limit "${limit}" --json databaseId --jq '.[0].databaseId')
   [[ -n "${workflow}" ]] && find_args+=(--workflow "${workflow}")
@@ -311,12 +311,16 @@ cmd_await() {
     return 0
   fi
   require_gh_auth "${repo}"
-  while ((elapsed <= timeout)); do
-    run_id="$("${find_args[@]}" 2>/dev/null || true)"
+  deadline=$((SECONDS + timeout))
+  while :; do
+    if ! run_id="$("${find_args[@]}")"; then
+      die "failed to list workflow runs while awaiting ${label}"
+    fi
     [[ -n "${run_id}" && "${run_id}" != "null" ]] && break
-    ((elapsed == timeout)) && break
-    sleep "${interval}"
-    elapsed=$((elapsed + interval))
+    ((SECONDS >= deadline)) && break
+    sleep_for=$((deadline - SECONDS))
+    ((sleep_for > interval)) && sleep_for="${interval}"
+    sleep "${sleep_for}"
   done
   [[ -n "${run_id}" && "${run_id}" != "null" ]] ||
     die "no ${label} run appeared within ${timeout}s"

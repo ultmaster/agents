@@ -85,7 +85,9 @@ done
 declare -A seen_ports=()
 for port in "${PORTS[@]}"; do
   [[ "$port" =~ ^[0-9]+$ ]] || die "invalid port: $port"
-  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "port out of range: $port"
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    die "port out of range: $port"
+  fi
   [ -z "${seen_ports[$port]:-}" ] || die "duplicate port: $port"
   seen_ports[$port]=1
 done
@@ -152,8 +154,12 @@ RUN_ID=$(random_token)
 export UI_VERIFIER_RUN_ID=$RUN_ID
 
 if [ "$FOREGROUND" -eq 1 ]; then
+  # The single-quoted program intentionally expands $1/$2 in the child shell.
+  # shellcheck disable=SC2016
   setsid bash -lc 'cd "$1" && exec bash -lc "$2"' bash "$CWD" "$COMMAND" >"$LOG" 2>&1 &
 else
+  # The single-quoted program intentionally expands $1/$2 in the child shell.
+  # shellcheck disable=SC2016
   nohup setsid bash -lc 'cd "$1" && exec bash -lc "$2"' bash "$CWD" "$COMMAND" >"$LOG" 2>&1 &
 fi
 LAUNCH_PID=$!

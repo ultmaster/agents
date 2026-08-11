@@ -38,10 +38,12 @@ if [ -d "$PROFILE" ]; then
 elif [[ "$PROFILE" != /* ]]; then
   die 'a nonexistent profile must be supplied as an absolute path'
 fi
+case "$PROFILE" in /) die 'refusing the filesystem root as a profile' ;; esac
 
 is_chrome_process() {
   local pid=$1 comm
-  comm=$(ps -p "$pid" -o comm= 2>/dev/null) || return 1
+  [ -r "/proc/$pid/comm" ] || return 1
+  IFS= read -r comm <"/proc/$pid/comm" || return 1
   case "$comm" in
     chrome|chrome_crashpad*|chromium|chromium-browser|google-chrome*|Google\ Chrome*) return 0 ;;
     *) return 1 ;;

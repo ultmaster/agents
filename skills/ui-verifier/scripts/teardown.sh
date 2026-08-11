@@ -41,7 +41,6 @@ RUN_ID=''
 LAUNCH_PID=''
 LAUNCH_ID=''
 PGID=''
-LOG=''
 PORTS=()
 
 while IFS= read -r line || [ -n "$line" ]; do
@@ -54,7 +53,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     LAUNCH_PID) LAUNCH_PID=$value ;;
     LAUNCH_ID) LAUNCH_ID=$value ;;
     PGID) PGID=$value ;;
-    LOG) LOG=$value ;;
+    LOG) : ;;
     PORT) PORTS+=("$value") ;;
     CWD|HEALTH_URL) ;;
     *) die "unknown state key: $key" ;;
@@ -68,7 +67,10 @@ done < "$STATE"
 [ "$PGID" = "$LAUNCH_PID" ] || die 'state does not describe an isolated launcher process group'
 [ -n "$LAUNCH_ID" ] || die 'missing launcher process identity'
 for port in "${PORTS[@]}"; do
-  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "invalid recorded port: $port"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "invalid recorded port: $port"
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    die "invalid recorded port: $port"
+  fi
 done
 process_id() {
   local pid=$1 line rest

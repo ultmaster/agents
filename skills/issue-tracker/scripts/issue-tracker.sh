@@ -812,21 +812,24 @@ USAGE
   fi
   require_gh_auth "${repo}"
 
-  # Create the label only if absent (no --force, so existing label colors and
-  # descriptions are left untouched).
-  gh label create "${new_label}" -R "${repo}" -c "${color}" \
-    -d "Status: ${set_status}" >/dev/null 2>&1 || true
-
-  # Drop any other canonical status label currently on the issue.
+  # Read the current labels before any write. Replacing a managed label is not
+  # safe when GitHub cannot tell us which managed label is already present.
   local current
-  current="$(gh issue view "${num}" -R "${repo}" --json labels \
-    --jq '.labels[].name' 2>/dev/null || true)"
+  if ! current="$(gh issue view "${num}" -R "${repo}" --json labels \
+    --jq '.labels[].name' 2>/dev/null)"; then
+    die "could not read current labels for ${repo}#${num}; status was not changed"
+  fi
   local -a remove=()
   local lbl
   while IFS= read -r lbl; do
     [[ -n "${lbl}" && "${lbl}" != "${new_label}" ]] && is_status_name "${lbl}" \
       && remove+=(--remove-label "${lbl}")
   done <<<"${current}"
+
+  # Create the label only if absent (no --force, so existing label colors and
+  # descriptions are left untouched).
+  gh label create "${new_label}" -R "${repo}" -c "${color}" \
+    -d "Status: ${set_status}" >/dev/null 2>&1 || true
 
   log "Setting ${repo}#${num} -> ${new_label}"
   gh issue edit "${num}" -R "${repo}" --add-label "${new_label}" "${remove[@]}"
@@ -886,7 +889,9 @@ USAGE
   if [[ -n "${set_list}" && ${dry_run} -eq 0 ]]; then
     require_gh_auth "${repo}"
     local current
-    current="$(gh issue view "${num}" -R "${repo}" --json labels --jq '.labels[].name' 2>/dev/null || true)"
+    if ! current="$(gh issue view "${num}" -R "${repo}" --json labels --jq '.labels[].name' 2>/dev/null)"; then
+      die "could not read current labels for ${repo}#${num}; areas were not changed"
+    fi
     local lbl keep
     while IFS= read -r lbl; do
       [[ -n "${lbl}" ]] || continue

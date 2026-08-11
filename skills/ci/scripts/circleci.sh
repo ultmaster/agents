@@ -180,12 +180,27 @@ selected_remote() {
 
 circle_project_from_value() {
   local value="$1" host="" path="" rest="" vcs=""
+  case "${value}" in
+    gh/* | bb/* | gl/* | github/* | bitbucket/*)
+      value="${value%.git}"
+      if [[ "${value}" =~ ^(gh|bb|gl)/[^/]+/[^/]+$ ]]; then
+        printf '%s\n' "${value}"
+        return 0
+      fi
+      if [[ "${value}" =~ ^github/[^/]+/[^/]+$ ]]; then
+        printf 'gh/%s\n' "${value#github/}"
+        return 0
+      fi
+      if [[ "${value}" =~ ^bitbucket/[^/]+/[^/]+$ ]]; then
+        printf 'bb/%s\n' "${value#bitbucket/}"
+        return 0
+      fi
+      return 1
+      ;;
+  esac
   value="${value%/}"
   value="${value%.git}"
   case "${value}" in
-    gh/*/* | bb/*/* | gl/*/*) printf '%s\n' "${value}"; return 0 ;;
-    github/*/*) printf 'gh/%s\n' "${value#github/}"; return 0 ;;
-    bitbucket/*/*) printf 'bb/%s\n' "${value#bitbucket/}"; return 0 ;;
     git@*:* )
       host="${value#git@}"
       host="${host%%:*}"
@@ -201,7 +216,7 @@ circle_project_from_value() {
   esac
   path="${path#/}"
   path="${path%.git}"
-  [[ "${path}" == */* && "${path}" != */*/* ]] || return 1
+  [[ "${path}" =~ ^[^/]+/[^/]+$ ]] || return 1
   case "${host}" in
     github.com) vcs="gh" ;;
     bitbucket.org) vcs="bb" ;;
@@ -253,7 +268,7 @@ default_branch() {
   [[ -n "${remote}" ]] || return 1
   ref="$(git symbolic-ref --quiet --short "refs/remotes/${remote}/HEAD" 2>/dev/null || true)"
   [[ -n "${ref}" ]] || return 1
-  printf '%s\n' "${ref#${remote}/}"
+  printf '%s\n' "${ref#"${remote}"/}"
 }
 
 circle_config() {
@@ -333,8 +348,15 @@ prepare_live() {
   require_token
 }
 
+validate_watch_timing() {
+  local timeout="$1" interval="$2"
+  [[ "${timeout}" =~ ^[0-9]+$ && "${interval}" =~ ^[1-9][0-9]*$ ]] ||
+    die "timeout and interval must be non-negative/positive integer seconds"
+}
+
 trigger_pipeline() {
   local branch="$1" parameters="$2" watch="$3" timeout="$4" interval="$5"
+  validate_watch_timing "${timeout}" "${interval}"
   require_confirmation "trigger"
   require_jq
   if ((!dry_run)); then
@@ -364,15 +386,15 @@ trigger_pipeline() {
 
 watch_pipeline() {
   local pipeline_id="$1" timeout="${2:-3600}" interval="${3:-15}"
-  [[ "${timeout}" =~ ^[0-9]+$ && "${interval}" =~ ^[1-9][0-9]*$ ]] ||
-    die "timeout and interval must be non-negative/positive integer seconds"
+  validate_watch_timing "${timeout}" "${interval}"
   if ((dry_run)); then
     print_command curl -H 'Circle-Token: <redacted>' "$(api_v2)/pipeline/${pipeline_id}/workflow"
     return 0
   fi
   prepare_live
-  local elapsed=0 body statuses status pending bad
-  while ((elapsed <= timeout)); do
+  local body statuses status pending bad deadline sleep_for
+  deadline=$((SECONDS + timeout))
+  while :; do
     body="$(circle_curl -sS "$(api_v2)/pipeline/${pipeline_id}/workflow")"
     statuses="$(printf '%s' "${body}" | jq -r '.items[]?.status')"
     if [[ -n "${statuses}" ]]; then
@@ -391,9 +413,10 @@ watch_pipeline() {
         return 1
       fi
     fi
-    ((elapsed == timeout)) && break
-    sleep "${interval}"
-    elapsed=$((elapsed + interval))
+    ((SECONDS >= deadline)) && break
+    sleep_for=$((deadline - SECONDS))
+    ((sleep_for > interval)) && sleep_for="${interval}"
+    sleep "${sleep_for}"
   done
   die "timed out after ${timeout}s watching pipeline ${pipeline_id}"
 }
@@ -623,7 +646,8 @@ cmd_view() {
     shift
   done
   [[ -n "${pipeline_id}" ]] || die "view requires a pipeline id"
-  local url="$(api_v2)/pipeline/${pipeline_id}/workflow"
+  local url
+  url="$(api_v2)/pipeline/${pipeline_id}/workflow"
   if ((dry_run)); then
     print_command curl -H 'Circle-Token: <redacted>' "${url}"
     return 0
@@ -652,7 +676,8 @@ cmd_jobs() {
     shift
   done
   [[ -n "${workflow_id}" ]] || die "jobs requires a workflow id"
-  local url="$(api_v2)/workflow/${workflow_id}/job"
+  local url
+  url="$(api_v2)/workflow/${workflow_id}/job"
   if ((dry_run)); then
     print_command curl -H 'Circle-Token: <redacted>' "${url}"
     return 0
@@ -719,7 +744,8 @@ cmd_cancel() {
   done
   [[ -n "${workflow_id}" ]] || die "cancel requires a workflow id"
   require_confirmation "cancel"
-  local url="$(api_v2)/workflow/${workflow_id}/cancel"
+  local url
+  url="$(api_v2)/workflow/${workflow_id}/cancel"
   if ((dry_run)); then
     print_command curl -X POST -H 'Circle-Token: <redacted>' "${url}"
     return 0
