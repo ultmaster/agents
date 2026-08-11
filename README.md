@@ -1,20 +1,20 @@
 # Personal agent library
 
-This repository is the source of truth for personal instructions, skills, and
-agent configuration that are useful across projects. Project-specific knowledge
-stays with its project; this library holds preferences and workflows that should
-travel.
+This repository is the source of truth for personal instructions and reusable
+skills shared by Codex and Claude across unrelated projects. Repository-specific
+architecture and commands stay in each project; this library holds portable
+working preferences and workflows.
 
-## Layout
+## What it contains
 
-- `AGENTS.md` contains concise, always-on instructions shared by agent harnesses.
-- `CLAUDE.md` points to `AGENTS.md`, so Claude and Codex receive the same baseline.
-- `.agents/skills/` is the canonical home for portable skills.
-- `.claude/skills` points to `.agents/skills/` for Claude Code discovery.
-- `.codex/agents/` and `.codex/rules/` hold reusable Codex-only profiles and
-  execution rules when a behavior cannot be expressed portably.
+- `RULES.md` — the canonical always-on personal instructions.
+- `AGENTS.md` and `CLAUDE.md` — repository-local symlinks to `RULES.md`.
+- `setup.sh` — a conflict-safe installer for user-level rule and skill links.
+- `skills/` — the canonical reusable skill tree.
+- `.agents/skills` and `.claude/skills` — repository-local discovery symlinks to
+  `skills/`.
 
-## Skill catalog
+## Skills
 
 | Skill | Purpose |
 | --- | --- |
@@ -23,27 +23,47 @@ travel.
 | `issue-tracker` | Work GitHub issues as durable, evidence-backed task records. |
 | `test` | Choose truthful test boundaries and verify changes at the right layers. |
 | `ui-design` | Run the design-review-implementation-promotion loop for visual work. |
-| `ui-verifier` | Prove a UI change in the running application without harming user processes. |
+| `ui-verifier` | Prove UI changes in the running application without harming user processes. |
 | `windows-dev` | Diagnose shell and platform differences on Windows and WSL. |
 
-## Using the library from another repository
+## Install
 
-Link only the material the project needs. For example:
+Clone the repository at a stable location, preview the links, then install them:
 
 ```bash
-mkdir -p .agents/skills
-ln -s ~/agents/.agents/skills/ai-comment .agents/skills/ai-comment
-mkdir -p .claude
-ln -s ../.agents/skills .claude/skills
+git clone git@github.com:ultmaster/agents.git ~/agents
+cd ~/agents
+./setup.sh --dry-run
+./setup.sh
 ```
 
-Keep project-specific overrides in the consuming repository. When a local rule
-conflicts with this library, the local rule should win.
+The setup is idempotent and creates these links:
 
-The skills discover commands, providers, remotes, design sources, and test
-layout from each consuming repository. Put unavoidable project-specific values
-in that project's instructions or the documented local configuration file,
-not back into this library.
+| Consumer | Link | Source |
+| --- | --- | --- |
+| Codex rules | `~/.codex/AGENTS.md` or `$CODEX_HOME/AGENTS.md` | `RULES.md` |
+| Claude rules | `~/.claude/CLAUDE.md` or `$CLAUDE_CONFIG_DIR/CLAUDE.md` | `RULES.md` |
+| Codex skills | `~/.agents/skills/<name>` | `skills/<name>` |
+| Claude skills | `~/.claude/skills/<name>` or `$CLAUDE_CONFIG_DIR/skills/<name>` | `skills/<name>` |
 
-Do not commit credentials, generated caches, or raw conversation transcripts.
-Extract durable guidance from history and record the guidance instead.
+Each skill is linked individually so other personal skills can coexist. The
+installer never replaces a file, directory, dangling link, or link to another
+source; it reports every conflict before changing anything. It does not touch
+`~/.codex/skills`, where bundled and managed Codex skills may live.
+
+Codex and Claude detect skill edits automatically in most cases. Restart the
+client if a newly created user skill directory does not appear. The target paths
+follow the official [Codex instruction](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
+[Codex skill](https://learn.chatgpt.com/docs/build-skills),
+[Claude instruction](https://code.claude.com/docs/en/memory), and
+[Claude skill](https://code.claude.com/docs/en/skills) discovery contracts.
+
+## Maintaining the library
+
+Keep only cross-repository preferences and workflows here. Discover project
+commands, providers, remotes, design sources, and test layouts at runtime, and
+leave unavoidable project values in that project's own instructions.
+
+Never commit credentials, generated caches, or raw conversation transcripts.
+Validate every changed skill with the skill validator and test bundled scripts
+before committing it.

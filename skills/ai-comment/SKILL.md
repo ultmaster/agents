@@ -24,17 +24,18 @@ into “change nearby code and delete the comment.”
 
 ## Workflow
 
-1. Run the bundled scanner from the repository root, honoring any path or diff
-   scope the user supplied:
+1. Resolve the bundled scanner from this skill directory, then run it from the
+   target repository root while honoring any path or diff scope the user
+   supplied:
 
    ```bash
-   bash .agents/skills/ai-comment/scripts/scan.sh
-   bash .agents/skills/ai-comment/scripts/scan.sh src tests
+   SCANNER="<skill-root>/scripts/scan.sh"
+   bash "$SCANNER"
+   bash "$SCANNER" src tests
    ```
 
-   If the project links this skill elsewhere, invoke the scanner through that
-   path. For a diff-only scan, pass the changed files as arguments and exclude
-   deleted paths.
+   For a diff-only scan, pass the changed files as arguments and exclude deleted
+   paths.
 
 2. Read each hit in context, including relevant callers and tests. A marker can
    sit at a symptom while the correct change belongs to a lower-level owner.
