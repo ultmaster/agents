@@ -4,21 +4,29 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: setup.sh [--dry-run] [--target-home DIRECTORY]
+Usage: setup.sh [--dry-run] [--prune] [--target-home DIRECTORY]
 
 Install this repository's rules and skills into the current user's Codex and
 Claude configuration directories. Existing non-matching paths are never
 overwritten. --target-home installs into an alternate home-shaped directory and
 is useful for validation.
+
+Renaming or removing a skill leaves a link in the user's skill directories whose
+source no longer exists. Those stale links are always reported. --prune removes
+them, and only them: a link is pruned only when it points into this repository's
+skills directory and that target is gone. Links to any other source are never
+touched.
 EOF
 }
 
 dry_run=false
+prune=false
 target_home=''
 target_home_set=false
 while (($#)); do
   case "$1" in
     --dry-run) dry_run=true; shift ;;
+    --prune) prune=true; shift ;;
     --target-home)
       [[ "$#" -ge 2 ]] || { usage >&2; exit 2; }
       target_home=$2
@@ -119,9 +127,36 @@ for index in "${!link_sources[@]}"; do
   fi
 done
 
+# A renamed or removed skill leaves behind a link whose source no longer exists.
+# Only a link pointing into this repository's skills directory is eligible: a
+# link to any other source belongs to the user, however broken it looks.
+stale_links=()
+for skills_root in "$codex_skills_root" "$claude_skills_root"; do
+  [[ -d "$skills_root" && ! -L "$skills_root" ]] || continue
+  for existing_link in "$skills_root"/*; do
+    [[ -L "$existing_link" ]] || continue
+    link_target=$(readlink "$existing_link")
+    [[ "$link_target" == "${skills_source}/"* ]] || continue
+    [[ -e "$link_target" ]] && continue
+    stale_links+=("$existing_link")
+  done
+done
+
+if ! "$prune"; then
+  for stale_link in "${stale_links[@]}"; do
+    printf 'setup.sh: stale link: %s -> %s (rerun with --prune to remove)\n' \
+      "$stale_link" "$(readlink "$stale_link")" >&2
+  done
+fi
+
 ((conflicts == 0)) || die "found ${conflicts} conflict(s); no links were changed"
 
 if "$dry_run"; then
+  if "$prune"; then
+    for stale_link in "${stale_links[@]}"; do
+      printf 'would prune %s -> %s\n' "$stale_link" "$(readlink "$stale_link")"
+    done
+  fi
   for index in "${!link_sources[@]}"; do
     if [[ -L "${link_targets[$index]}" ]]; then
       printf 'already linked %s -> %s\n' "${link_targets[$index]}" "${link_sources[$index]}"
@@ -130,6 +165,19 @@ if "$dry_run"; then
     fi
   done
   exit 0
+fi
+
+if "$prune"; then
+  for stale_link in "${stale_links[@]}"; do
+    # Re-check immediately before removing: the link must still be a symlink
+    # into this repository whose target is still missing.
+    [[ -L "$stale_link" ]] || die "stale link vanished during setup: ${stale_link}"
+    link_target=$(readlink "$stale_link")
+    [[ "$link_target" == "${skills_source}/"* && ! -e "$link_target" ]] ||
+      die "stale link changed during setup: ${stale_link} -> ${link_target}"
+    rm -- "$stale_link"
+    printf 'pruned %s -> %s\n' "$stale_link" "$link_target"
+  done
 fi
 
 for destination_dir in "${required_directories[@]}"; do

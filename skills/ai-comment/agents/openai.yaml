@@ -1,4 +1,0 @@
-interface:
-  display_name: "AI Comment Markers"
-  short_description: "Triage and resolve typed AI markers"
-  default_prompt: "Use $ai-comment to scan and triage the AI markers in this repository."

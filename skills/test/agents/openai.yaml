@@ -1,4 +1,0 @@
-interface:
-  display_name: "Testing"
-  short_description: "Choose and run truthful test coverage"
-  default_prompt: "Use $test to add the right regression coverage and verify this change."

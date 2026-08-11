@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Design Loop"
+  short_description: "Design and review UI changes before code"
+  default_prompt: "Use $ui-design-loop to sketch and review this UI change before implementation."

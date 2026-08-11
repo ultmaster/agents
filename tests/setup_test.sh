@@ -181,7 +181,7 @@ test_help_and_argument_validation() {
 
   capture "$setup_script" --help
   assert_status 0
-  assert_output_contains 'Usage: setup.sh [--dry-run] [--target-home DIRECTORY]'
+  assert_output_contains 'Usage: setup.sh [--dry-run] [--prune] [--target-home DIRECTORY]'
 
   capture "$setup_script" -h
   assert_status 0
@@ -343,6 +343,55 @@ test_preserves_unrelated_skills_and_codex_skills() {
   assert_file_text "${target_home}/.agents/skills/external-skill/owner.txt" 'agents external'
   assert_file_text "${target_home}/.claude/skills/external-skill/owner.txt" 'claude external'
   assert_file_text "${target_home}/.codex/skills/bundled-skill/owner.txt" 'managed elsewhere'
+}
+
+test_reports_and_prunes_only_this_repository_stale_links() {
+  local case_root target_home renamed_link foreign_link
+  case_root=$(new_case_root) || fail "could not create case root"
+  target_home="${case_root}/home"
+  mkdir -p -- "${target_home}/.agents/skills" "${target_home}/.claude/skills" \
+    || fail "could not seed skill roots"
+
+  # A skill that this repository renamed away: the link still points into the
+  # repository's skills directory, but that source is gone.
+  renamed_link="${target_home}/.agents/skills/removed-skill"
+  ln -s -- "${repo_root}/skills/removed-skill" "$renamed_link" \
+    || fail "could not seed a stale link"
+  # A broken link owned by the user. It must survive every run: it points
+  # somewhere this installer does not manage, however dangling it looks.
+  foreign_link="${target_home}/.claude/skills/foreign-skill"
+  ln -s -- "${case_root}/somewhere-else/foreign-skill" "$foreign_link" \
+    || fail "could not seed a foreign dangling link"
+
+  # Reported, never removed, and the install still completes.
+  capture "$setup_script" --target-home "$target_home"
+  assert_status 0
+  assert_output_contains 'stale link'
+  assert_output_contains 'rerun with --prune to remove'
+  assert_link_target "$renamed_link" "${repo_root}/skills/removed-skill"
+  assert_current_install "$target_home" "${target_home}/.codex" "${target_home}/.claude"
+
+  # --dry-run --prune previews without touching anything.
+  capture "$setup_script" --target-home "$target_home" --prune --dry-run
+  assert_status 0
+  assert_output_contains "would prune ${renamed_link}"
+  assert_link_target "$renamed_link" "${repo_root}/skills/removed-skill"
+
+  # --prune removes the repository's own stale link and reports it.
+  capture "$setup_script" --target-home "$target_home" --prune
+  assert_status 0
+  assert_output_contains "pruned ${renamed_link}"
+  assert_absent "$renamed_link"
+  assert_current_install "$target_home" "${target_home}/.codex" "${target_home}/.claude"
+
+  # The user's dangling link is never reported and never removed.
+  assert_link_target "$foreign_link" "${case_root}/somewhere-else/foreign-skill"
+  capture "$setup_script" --target-home "$target_home" --prune
+  assert_status 0
+  assert_link_target "$foreign_link" "${case_root}/somewhere-else/foreign-skill"
+  if [[ "$RUN_OUTPUT" == *foreign-skill* ]]; then
+    fail "a link outside this repository was treated as stale: ${RUN_OUTPUT}"
+  fi
 }
 
 test_completes_partial_valid_install() {
@@ -574,6 +623,10 @@ record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='preserves unrelated skills and codex skills'
 (test_preserves_unrelated_skills_and_codex_skills)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='reports and prunes only this repository stale links'
+(test_reports_and_prunes_only_this_repository_stale_links)
 record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='completes partial valid install'

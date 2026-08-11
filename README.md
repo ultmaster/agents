@@ -20,13 +20,19 @@ user-level discovery paths outside the checkout.
 
 | Skill | Purpose |
 | --- | --- |
-| `ai-comment` | Triage typed AI markers without guessing away questions. |
-| `ci` | Reproduce, inspect, trigger, and diagnose CI across providers. |
-| `issue-tracker` | Work GitHub issues as durable, evidence-backed task records. |
-| `test` | Choose truthful test boundaries and verify changes at the right layers. |
-| `ui-design` | Run the design-review-implementation-promotion loop for visual work. |
-| `ui-verifier` | Prove UI changes in the running application without harming user processes. |
-| `windows-dev` | Diagnose shell and platform differences on Windows and WSL. |
+| `ai-marker-triage` | Triage typed AI markers without guessing away questions. |
+| `ci-operations` | Reproduce, inspect, trigger, and diagnose CI across providers. |
+| `github-issues` | Work GitHub issues as durable, evidence-backed task records. |
+| `test-strategy` | Choose truthful test boundaries and verify changes at the right layers. |
+| `ui-design-loop` | Run the design-review-implementation-promotion loop for visual work. |
+| `ui-runtime-proof` | Prove UI changes in the running application without harming user processes. |
+| `windows-shell-dev` | Diagnose shell and platform differences on Windows and WSL. |
+
+These names are deliberately concrete. A skill installed at user scope applies in
+every repository, and Claude Code resolves a personal skill above a project skill
+of the same name — so a personal skill called `ci` would make every project's own
+`ci` skill unreachable. Naming each skill for what it actually does leaves the
+natural generic names free for the projects that own them.
 
 ## Install
 

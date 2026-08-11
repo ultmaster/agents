@@ -36,6 +36,11 @@ is not this repository's maintenance guide.
   skill. Keep its trigger conditions accurate in `SKILL.md` frontmatter.
 - Prefer capability-based language and runtime discovery over repository names,
   usernames, fixed ports, package layouts, or machine-specific paths.
+- Name each skill for what it concretely does. These skills install at user
+  scope and shadow any project skill of the same name, so a generic name such as
+  `ci`, `test`, or `ui-design` would make that project's own skill unreachable.
+  Renaming a skill leaves stale user-level links behind; run `./setup.sh --prune`
+  afterward.
 - Keep scripts self-contained and avoid exposing credentials in command
   arguments or logs. Resolve bundled resources relative to the skill root, but
   resolve credentials, caches, and other per-repository state from the current

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Marker Triage"
+  short_description: "Triage and resolve typed AI markers"
+  default_prompt: "Use $ai-marker-triage to scan and triage the AI markers in this repository."

@@ -1,4 +1,0 @@
-interface:
-  display_name: "UI Design"
-  short_description: "Design and review UI changes before code"
-  default_prompt: "Use $ui-design to sketch and review this UI change before implementation."

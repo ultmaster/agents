@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Strategy"
+  short_description: "Choose and run truthful test coverage"
+  default_prompt: "Use $test-strategy to add the right regression coverage and verify this change."
