@@ -36,8 +36,15 @@ is not this repository's maintenance guide.
   skill. Keep its trigger conditions accurate in `SKILL.md` frontmatter.
 - Prefer capability-based language and runtime discovery over repository names,
   usernames, fixed ports, package layouts, or machine-specific paths.
-- Keep scripts self-contained, resolve resources relative to the skill root,
-  and avoid exposing credentials in command arguments or logs.
+- Keep scripts self-contained and avoid exposing credentials in command
+  arguments or logs. Resolve bundled resources relative to the skill root, but
+  resolve credentials, caches, and other per-repository state from the current
+  repository's profile directory for that skill — the first of
+  `$<SKILL>_PROFILE_DIR`, `<repository-root>/.agents/skills/<name>`,
+  `<repository-root>/.claude/skills/<name>`, then the skill root. These skills
+  install at user scope and are shared by every repository, so state stored
+  beside the skill leaks across unrelated projects. Never create a profile
+  directory in a repository that did not already opt in.
 - Update the README skill catalog when a skill is added, removed, renamed, or
   materially changes purpose.
 - Because setup installs each skill separately, rerun it after adding or

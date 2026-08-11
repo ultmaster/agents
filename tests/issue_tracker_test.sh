@@ -277,6 +277,68 @@ test_view_caches_attachments_without_token_in_arguments() {
   assert_not_contains "${curl_log}" 'fake-secret-token'
 }
 
+# Settings and cached issue material must follow the repository being worked on.
+# This skill installs at user scope, so anything stored beside it is shared by
+# every project. Exercise a disposable copy so a skill-root .env can be planted
+# without touching the installed tree.
+test_repository_profile_owns_settings_and_cache() {
+  new_case
+  local skill_copy="${CASE_DIR}/disposable-skill/issue-tracker"
+  mkdir -p "${skill_copy}"
+  cp -R "${REPO_ROOT}/skills/issue-tracker/scripts" "${skill_copy}/"
+  printf 'ISSUE_TRACKER_SIGNATURE="skill-root-agent"\n' >"${skill_copy}/.env"
+  local tracker="${skill_copy}/scripts/issue-tracker.sh"
+
+  local checkout="${CASE_DIR}/checkout"
+  git init -q "${checkout}"
+  git -C "${checkout}" remote add origin https://github.com/owner/project.git
+
+  # With no profile directory the skill's own .env still applies.
+  capture env -C "${checkout}" "${tracker}" create --title T --body B \
+    --repo owner/project --dry-run
+  assert_eq 0 "${RUN_STATUS}"
+  capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
+  assert_contains "${RUN_OUTPUT}" "${skill_copy}/cache/owner__project/5"
+
+  # A repository profile directory owns settings outright. An empty one must not
+  # fall back to the skill's signature; that fallback is the leak being prevented.
+  mkdir -p "${checkout}/.agents/skills/issue-tracker"
+  capture env -C "${checkout}" "${tracker}" create --title T --body B \
+    --repo owner/project --dry-run
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'an empty profile fell back to the skill signature'
+  assert_contains "${RUN_OUTPUT}" 'create requires a signature'
+  assert_contains "${RUN_OUTPUT}" "${checkout}/.agents/skills/issue-tracker/.env"
+
+  printf 'ISSUE_TRACKER_SIGNATURE="project-agent"\n' \
+    >"${checkout}/.agents/skills/issue-tracker/.env"
+  capture env -C "${checkout}" "${tracker}" create --title T --body B \
+    --repo owner/project --dry-run
+  assert_eq 0 "${RUN_STATUS}"
+
+  # The cache follows the profile, so one project's attachments never land in the
+  # shared skill tree or in another repository.
+  capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" \
+    "${checkout}/.agents/skills/issue-tracker/cache/owner__project/5"
+  assert_not_contains "${RUN_OUTPUT}" "${skill_copy}/cache"
+
+  # The .claude profile applies when .agents is absent; .agents wins over it.
+  rm -rf "${checkout}/.agents"
+  mkdir -p "${checkout}/.claude/skills/issue-tracker"
+  capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
+  assert_contains "${RUN_OUTPUT}" \
+    "${checkout}/.claude/skills/issue-tracker/cache/owner__project/5"
+
+  # An explicit override beats discovery.
+  capture env -C "${checkout}" ISSUE_TRACKER_PROFILE_DIR="${CASE_DIR}/explicit" \
+    "${tracker}" view 5 --repo owner/project --dry-run
+  assert_contains "${RUN_OUTPUT}" "${CASE_DIR}/explicit/cache/owner__project/5"
+
+  # Discovery never creates a profile directory in a repository that did not opt in.
+  [ ! -e "${CASE_DIR}/explicit" ] || fail 'an override path was created on disk'
+}
+
 printf 'issue-tracker tests\n'
 run_test 'validates dry runs, signatures, and write confirmation' test_validation_dry_run_and_gate
 run_test 'discovers the canonical upstream repository first' test_repository_discovery_prefers_upstream
@@ -284,6 +346,7 @@ run_test 'composes signed plain and inline-image bodies' test_signed_body_and_in
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'caches attachments without tokens in curl arguments' test_view_caches_attachments_without_token_in_arguments
+run_test 'resolves settings and cache from the repository profile' test_repository_profile_owns_settings_and_cache
 
 if [ "${FAILED}" -ne 0 ]; then
   printf '%d/%d issue-tracker tests failed\n' "${FAILED}" "${TOTAL}" >&2

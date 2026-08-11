@@ -7,7 +7,37 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 skill_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly skill_root
-readonly env_file="${skill_root}/.env"
+
+# Credentials belong to the repository being worked on, not to this skill. A
+# personal skill installed at user scope is shared by every repository, so a
+# token left beside it would silently become every project's default. When the
+# current repository carries its own profile directory for this skill, that
+# directory owns local configuration outright; falling back to the skill's own
+# .env there would reintroduce the leak the profile exists to prevent.
+# Bundled resources stay skill-root-relative; only local settings resolve here.
+resolve_profile_dir() {
+  local repo_root candidate
+  if [[ -n "${CI_PROFILE_DIR:-}" ]]; then
+    printf '%s\n' "${CI_PROFILE_DIR}"
+    return 0
+  fi
+  if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    for candidate in \
+      "${repo_root}/.agents/skills/ci" \
+      "${repo_root}/.claude/skills/ci"; do
+      if [[ -d "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+  fi
+  printf '%s\n' "${skill_root}"
+}
+
+profile_dir="$(resolve_profile_dir)"
+readonly profile_dir
+env_file="${CI_ENV_FILE:-${profile_dir}/.env}"
+readonly env_file
 
 readonly CIRCLE_API_DEFAULT="https://circleci.com/api/v2"
 readonly CIRCLE_API_V1_DEFAULT="https://circleci.com/api/v1.1"
@@ -58,7 +88,17 @@ tests selectors:
 
 Environment overrides:
   CIRCLECI_TOKEN, CIRCLECI_PROJECT_SLUG, CIRCLECI_PROJECT_V1,
-  CI_REMOTE, CI_BRANCH, CIRCLECI_API, CIRCLECI_API_V1
+  CI_REMOTE, CI_BRANCH, CIRCLECI_API, CIRCLECI_API_V1,
+  CI_PROFILE_DIR, CI_ENV_FILE
+
+Local settings come from the repository's own profile directory when it has
+one, so a project's credentials never leak into unrelated repositories. The
+profile directory is the first of:
+  $CI_PROFILE_DIR
+  <repository-root>/.agents/skills/ci
+  <repository-root>/.claude/skills/ci
+  <skill-root>
+Settings load from <profile-directory>/.env, or from $CI_ENV_FILE when set.
 
 Examples:
   circleci.sh trigger --branch feature/name --parameter smoke=true --dry-run
@@ -153,7 +193,7 @@ load_env_file() {
 
 require_token() {
   [[ -n "${CIRCLECI_TOKEN:-}" ]] ||
-    die "CIRCLECI_TOKEN is unset; export it or copy ${skill_root}/.env.example to ${env_file} and fill the local .env"
+    die "CIRCLECI_TOKEN is unset; export it, point CI_ENV_FILE at a settings file, or copy ${skill_root}/.env.example to ${env_file} and fill it in"
 }
 
 # Feed the credential as a header on stdin so it never appears in curl's argv.

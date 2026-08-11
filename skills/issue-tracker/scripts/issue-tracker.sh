@@ -6,7 +6,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly SKILL_DIR="${SCRIPT_DIR%/scripts}"
-readonly CACHE_BASE="${SKILL_DIR}/cache" # view caches issue text + attachments here (gitignored)
+
+# Local settings and cached issue material belong to the repository being worked
+# on, not to this skill. A personal skill installed at user scope is shared by
+# every repository, so a token or an issue attachment left beside it would leak
+# across unrelated projects. When the current repository carries its own profile
+# directory for this skill, that directory owns both. Only a repository that
+# already opted in gets written to; this never creates a profile directory.
+resolve_profile_dir() {
+  local repo_root candidate
+  if [[ -n "${ISSUE_TRACKER_PROFILE_DIR:-}" ]]; then
+    printf '%s\n' "${ISSUE_TRACKER_PROFILE_DIR}"
+    return 0
+  fi
+  if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    for candidate in \
+      "${repo_root}/.agents/skills/issue-tracker" \
+      "${repo_root}/.claude/skills/issue-tracker"; do
+      if [[ -d "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+  fi
+  printf '%s\n' "${SKILL_DIR}"
+}
+
+PROFILE_DIR="$(resolve_profile_dir)"
+readonly PROFILE_DIR
+readonly ENV_FILE="${ISSUE_TRACKER_ENV_FILE:-${PROFILE_DIR}/.env}"
+readonly CACHE_BASE="${PROFILE_DIR}/cache" # view caches issue text + attachments here (gitignored)
 dry_run=0
 assume_yes=0
 
@@ -35,6 +64,15 @@ Repo selection (any command): --repo <owner/repo> (or <host/owner/repo>).
 Common options:
   --dry-run                     Print the gh command(s) without running them.
   --yes                         Confirm a write operation.
+
+Local settings and the issue cache come from the repository's own profile
+directory when it has one, so a project's credentials and cached attachments
+never leak into unrelated repositories. The profile directory is the first of:
+  $ISSUE_TRACKER_PROFILE_DIR
+  <repository-root>/.agents/skills/issue-tracker
+  <repository-root>/.claude/skills/issue-tracker
+  <skill-root>
+Settings load from <profile-directory>/.env, or $ISSUE_TRACKER_ENV_FILE when set.
 
 Examples:
   issue-tracker.sh repo
@@ -124,7 +162,7 @@ require_gh_image_session() {
   # There, pull GH_SESSION_TOKEN from the skill's gitignored .env and retry. We
   # only do this when the env didn't already supply a token, so an explicit
   # exported value is never clobbered by a stale file. See .env.example.
-  local env_file="${SKILL_DIR}/.env" configured_token=""
+  local env_file="${ENV_FILE}" configured_token=""
   if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]] \
     && configured_token="$(read_dotenv_setting GH_SESSION_TOKEN)"; then
     GH_SESSION_TOKEN="${configured_token}"
@@ -141,7 +179,7 @@ local browser by default — which works on a normal desktop, but not where it
 can't reach the browser keyring (e.g. WSL, whose backend is kwallet-bound).
 
 Fallback: copy the example env file and set your session cookie, then retry:
-  cp ${SKILL_DIR}/.env.example ${SKILL_DIR}/.env
+  cp ${SKILL_DIR}/.env.example ${ENV_FILE}
   # edit .env and set GH_SESSION_TOKEN — instructions are in the file
 Verify it works with:
   GH_SESSION_TOKEN=... gh image check-token     # or rely on the .env fallback
@@ -235,7 +273,7 @@ apply_images_to_body() {
 # Read one literal KEY=VALUE setting without evaluating the .env as shell code.
 # The exit status distinguishes an intentionally empty value from an unset one.
 read_dotenv_setting() {
-  local key="$1" env_file="${SKILL_DIR}/.env" line parsed_key value
+  local key="$1" env_file="${ENV_FILE}" line parsed_key value
   [[ -f "${env_file}" ]] || return 1
   while IFS= read -r line || [[ -n "${line}" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
@@ -716,7 +754,7 @@ USAGE
   [[ -n "${signature}" ]] || die "comment requires a signature identifying who is posting. Provide it via:
   --sign \"<agent identity>\"                           (per call)
   export ISSUE_TRACKER_SIGNATURE=\"...\"                 (per shell)
-  set ISSUE_TRACKER_SIGNATURE in ${SKILL_DIR}/.env   (persistent; see .env.example)"
+  set ISSUE_TRACKER_SIGNATURE in ${ENV_FILE}   (persistent; see .env.example)"
 
   if ((dry_run)); then
     if ((image_count)); then
@@ -997,7 +1035,7 @@ USAGE
   [[ -n "${signature}" ]] || die "create requires a signature identifying who is filing the issue. Provide it via:
   --sign \"<agent identity>\"                           (per call)
   export ISSUE_TRACKER_SIGNATURE=\"...\"                 (per shell)
-  set ISSUE_TRACKER_SIGNATURE in ${SKILL_DIR}/.env   (persistent; see .env.example)"
+  set ISSUE_TRACKER_SIGNATURE in ${ENV_FILE}   (persistent; see .env.example)"
 
   # Expand areas and assemble the full label set.
   local -a areas=() attach_labels=()
@@ -1144,7 +1182,7 @@ DOC
       printf '  ok    web session token valid via %s (user: %s)\n' "${via}" "${user}"
       token_ok=1
     else
-      local env_file="${SKILL_DIR}/.env" configured_token=""
+      local env_file="${ENV_FILE}" configured_token=""
       if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]] \
         && configured_token="$(read_dotenv_setting GH_SESSION_TOKEN)"; then
         GH_SESSION_TOKEN="${configured_token}"
@@ -1157,7 +1195,7 @@ DOC
     fi
     if ((! token_ok)); then
       printf '  FAIL  no valid web session token (browser extraction failed, no working .env)\n'
-      printf '        fallback: cp %s/.env.example %s/.env and set GH_SESSION_TOKEN (see that file)\n' "${SKILL_DIR}" "${SKILL_DIR}"
+      printf '        fallback: cp %s/.env.example %s and set GH_SESSION_TOKEN (see that file)\n' "${SKILL_DIR}" "${ENV_FILE}"
       fails=$((fails + 1))
     fi
   fi

@@ -11,6 +11,14 @@ agent harnesses.
 - Treat `skills/` as the canonical portable skill tree. Keep
   harness-specific configuration in `.codex/` or `.claude/` only when a shared
   skill or instruction cannot express it.
+- A personal skill and a project's same-named skill do not merge, and the
+  personal one is not always the one that should decide. Claude Code resolves
+  personal above project, so a project's own copy never reaches the skill menu
+  and its absence there is not evidence it is missing. Before acting on a skill
+  in a repository that ships its own copy, read that copy from the filesystem
+  (`.agents/skills/<name>/` or `.claude/skills/<name>/`) and prefer its facts,
+  scripts, and commands. The personal skill still owns the portable safety
+  rules; the project owns what is true about that project.
 - Never commit credentials, generated caches, raw transcripts, or other private
   runtime state. Distill conversation history into concise rules instead.
 

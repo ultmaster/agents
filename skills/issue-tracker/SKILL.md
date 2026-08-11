@@ -18,6 +18,11 @@ every non-dry-run helper call, including reads: the helper needs the host's
 `gh` authentication and network access. `help` and `--dry-run` stay local.
 Escalation only provides access; writes still require user intent and `--yes`.
 
+Check whether the repository ships its own tracker profile at
+`.agents/skills/issue-tracker/` or `.claude/skills/issue-tracker/`. A same-named
+project skill is shadowed by this one and never reaches the skill menu, so read
+it from the filesystem before assuming this skill's defaults apply.
+
 ## Repository selection
 
 Pass `--repo owner/repo` (or `host/owner/repo`) when the tracker is known or is
@@ -54,6 +59,15 @@ Read-only commands:
 and downloaded attachments under `cache/<repo>/<issue>/` unless `--dir` is
 given. Open every cached image needed to understand the report; printing the
 paths is not equivalent to inspecting them.
+
+Both the cache and `.env` live in the repository's own profile directory when it
+has one — the first of `$ISSUE_TRACKER_PROFILE_DIR`,
+`<repository-root>/.agents/skills/issue-tracker`,
+`<repository-root>/.claude/skills/issue-tracker`, then this skill's root — so one
+project's credentials and cached attachments never reach another. A repository
+that carries a profile owns its settings outright; this skill's `.env` is not
+consulted as a fallback there. `$ISSUE_TRACKER_ENV_FILE` overrides the file
+directly. The helper never creates a profile directory.
 
 Writes require `--yes`; use `--dry-run` first when the target or effect merits
 review:

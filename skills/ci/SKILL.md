@@ -9,13 +9,18 @@ description: Operate and diagnose repository CI safely across GitHub Actions and
 
 1. Read the repository's agent instructions and identify its root with
    `git rev-parse --show-toplevel`.
-2. Discover providers from local configuration:
+2. Check whether the repository ships its own CI profile at `.agents/skills/ci/`
+   or `.claude/skills/ci/`. A same-named project skill is shadowed by this one
+   and never reaches the skill menu, so read it from the filesystem rather than
+   assuming it does not exist. Prefer its pipelines, commands, and scripts; this
+   skill still owns the safety rules below.
+3. Discover providers from local configuration:
    - GitHub Actions: `.github/workflows/*.yml` or `*.yaml`
    - CircleCI: `.circleci/config.yml` or `config.yaml`
-3. Read the relevant workflow before acting. Copy its command, working directory,
+4. Read the relevant workflow before acting. Copy its command, working directory,
    runtime, service, and environment assumptions exactly. Discover the project's
    package/build tool from its lockfiles, manifests, and scripts; never assume one.
-4. Resolve the remote deliberately. The helpers prefer `upstream` when it exists,
+5. Resolve the remote deliberately. The helpers prefer `upstream` when it exists,
    then `origin`; override with `--remote`, `CI_REMOTE`, `--repo`/`CI_REPO`, or
    `--project`/`CIRCLECI_PROJECT_SLUG`.
 
@@ -63,6 +68,13 @@ Read-only commands: `list`, `await`, `watch`, `view`. Gated commands: `dispatch`
 
 Use `scripts/circleci.sh`. Copy `.env.example` to `.env` only when a local token
 file is necessary, and never commit `.env`.
+
+The token is read from the repository's own profile directory when it has one —
+the first of `$CI_PROFILE_DIR`, `<repository-root>/.agents/skills/ci`,
+`<repository-root>/.claude/skills/ci`, then this skill's root — so one project's
+credentials never become another's default. A repository that carries a profile
+owns its settings outright; this skill's `.env` is not consulted as a fallback
+there. `$CI_ENV_FILE` overrides the file directly.
 
 ```bash
 scripts/circleci.sh trigger --branch feature/name --parameter run_tests=true --dry-run
