@@ -7,12 +7,14 @@ working preferences and workflows.
 
 ## What it contains
 
-- `RULES.md` — the canonical always-on personal instructions.
-- `AGENTS.md` and `CLAUDE.md` — repository-local symlinks to `RULES.md`.
+- `RULES.md` — portable personal instructions installed for Codex and Claude.
+- `AGENTS.md` — repository-specific instructions for maintaining this library.
+- `CLAUDE.md` — a regular Claude Code import of `AGENTS.md`.
 - `setup.sh` — a conflict-safe installer for user-level rule and skill links.
 - `skills/` — the canonical reusable skill tree.
-- `.agents/skills` and `.claude/skills` — repository-local discovery symlinks to
-  `skills/`.
+
+The repository itself contains no symlinks. `setup.sh` creates links only in
+user-level discovery paths outside the checkout.
 
 ## Skills
 
@@ -60,9 +62,9 @@ follow the official [Codex instruction](https://learn.chatgpt.com/docs/agent-con
 
 ## Maintaining the library
 
-Keep only cross-repository preferences and workflows here. Discover project
-commands, providers, remotes, design sources, and test layouts at runtime, and
-leave unavoidable project values in that project's own instructions.
+Follow `AGENTS.md` when changing this repository. Keep only cross-repository
+preferences and workflows in `RULES.md` and `skills/`; leave unavoidable
+project values in the project that owns them.
 
 Never commit credentials, generated caches, or raw conversation transcripts.
 Validate every changed skill with the skill validator and test bundled scripts
