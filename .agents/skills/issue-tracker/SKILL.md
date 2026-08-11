@@ -32,7 +32,11 @@ different from the current checkout. Without it, discovery uses:
 This order prevents a personal fork from silently winning when an upstream
 remote exists. Ambiguous or non-GitHub remotes are refused. Run `"$TRACKER"
 repo` before a write when repository identity is not obvious; use `--repo` to
-override deliberately.
+override deliberately. Upstream-first discovery is a default, not authorization
+to write to that tracker. When multiple repositories could own the issue, verify
+the target from the task or issue reference before writing; if it remains
+ambiguous, ask. Do not infer an issue target from a pull request target or from
+which remote is writable.
 
 ## Commands
 
@@ -90,7 +94,8 @@ session token in arguments, bodies, logs, or commits.
 4. For non-trivial work, post the diagnosis and plan, then mark `in-progress`.
 5. Link each meaningful progress update to `owner/repo@sha`, a commit URL, or a
    PR. Match proof to the change: tests/logs for logic, rendered screenshots for
-   UI behavior.
+   UI behavior. For UI work, use the `ui-verifier` skill and attach the inspected
+   runtime screenshots to the issue with the route and state they prove.
 6. Post final proof and set `resolved`. Agents never close or reopen issues; a
    human verifies the evidence and changes issue state.
 

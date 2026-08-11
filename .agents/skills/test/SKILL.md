@@ -79,7 +79,11 @@ schema fingerprints and data-preservation assertions deliberately.
 For visual or serialized snapshots, inspect the diff as an artifact. Update a
 baseline only after confirming the behavior/design change is intended. Follow
 the repository's storage convention for large binaries (for example Git LFS)
-and never rewrite history without explicit approval.
+and never rewrite history without explicit approval. Update only affected
+baselines, inspect every changed image, and review the staged binary/LFS count
+before committing. Refuse unrelated bulk churn. Confirm that thresholds, masks,
+and ignored regions still fail meaningful structural regressions instead of
+merely making the current run green.
 
 ## UI changes
 
