@@ -313,7 +313,7 @@ assert_contains "$(resolved_token "${disposable_circle}")" 'Circle-Token: from-s
 mkdir -p "${profile_repo}/.agents/skills/ci-operations"
 expect_failure "CIRCLECI_TOKEN is unset" \
   env -C "${profile_repo}" "${disposable_circle}" list --project gh/owner/repo
-output="$(cd "${profile_repo}" && "${disposable_circle}" list --project gh/owner/repo 2>&1 || true)"
+output="$(cd "${profile_repo}" && "${disposable_circle}" list --project gh/owner/repo 2>&1)" || true
 assert_contains "${output}" "${profile_repo}/.agents/skills/ci-operations/.env"
 assert_not_contains "${output}" "to ${disposable_skill}/.env"
 
