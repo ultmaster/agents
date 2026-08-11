@@ -1,0 +1,10 @@
+.DS_Store
+*.swp
+
+# Local credentials and generated state never belong in this library.
+**/.env
+!**/.env.example
+**/.cache/
+**/cache/
+**/sessions/
+**/transcripts/
