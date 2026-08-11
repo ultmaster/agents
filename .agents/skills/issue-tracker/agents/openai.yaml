@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue Tracker"
+  short_description: "Work GitHub issues with durable evidence"
+  default_prompt: "Use $issue-tracker to read and work this GitHub issue end to end."

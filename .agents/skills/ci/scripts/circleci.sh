@@ -1,94 +1,70 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OctoStaff umbrella CircleCI orchestrator.
-#
-# CI is split across two systems:
-#   GitHub Actions  — .github/workflows/ci.yml: checks + unit tests.
-#   GitHub Actions  — .github/workflows/release.yml: npm publish on vX.Y.Z tags.
-#   CircleCI        — .circleci/config.yml: the large integration suites only.
-#
-# CircleCI now has one live config again, so triggering integration uses the
-# default pipeline endpoint:
-#   POST /api/v2/project/{slug}/pipeline
-#        { branch, parameters:{...} }
-#
-# Style mirrors .agents/skills/release/scripts/release.sh.
+# Repository-agnostic CircleCI operator. Project and branch are explicit or
+# derived from git. Every trigger or mutation requires --yes.
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# The skill is self-contained: its .env (CIRCLECI_TOKEN) lives next to this
-# script's parent, i.e. .agents/skills/ci/.env - not the umbrella root.
 skill_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly skill_root
-env_file="${skill_root}/.env"
-readonly env_file
+readonly env_file="${skill_root}/.env"
 
-# --- Constants ---------------------------------------------------------------
+readonly CIRCLE_API_DEFAULT="https://circleci.com/api/v2"
+readonly CIRCLE_API_V1_DEFAULT="https://circleci.com/api/v1.1"
 
-readonly CI_BRANCH="dev"
-readonly CIRCLE_PROJECT_SLUG="gh/octostaff/umbrella"
-readonly CIRCLE_API="https://circleci.com/api/v2"
-readonly CIRCLE_API_V1="https://circleci.com/api/v1.1"
-# v1.1 project path uses the long VCS name (github, not gh).
-readonly CIRCLE_PROJECT_V1="github/octostaff/umbrella"
-readonly CIRCLE_UI="https://app.circleci.com/pipelines/github/octostaff/umbrella"
-
-# Allowed module selectors (one per CircleCI integration job; kept in sync with
-# the run_<module> gates in .circleci/config.yml). `query_cost` is reachable
-# ONLY by naming it — a bare `tests` sends run_tests, which deliberately does
-# not light it (it profiles rather than gates, and is the priciest job here).
-readonly TEST_MODULES="bubble claude_scuba codex_scuba reef starfish playwright query_cost"
-
-project_id="" # resolved lazily from the slug (legacy definition cleanup only)
 dry_run=0
 assume_yes=0
-
-# --- Generic helpers ---------------------------------------------------------
+project_override=""
+remote_override="${CI_REMOTE:-}"
+REMAINING=()
 
 usage() {
   cat <<'USAGE'
 Usage: circleci.sh <command> [options]
 
-CI is split: checks + unit run on GitHub Actions (ci.yml), npm publish runs on
-GitHub Actions (release.yml), and this script owns only the CircleCI integration
-pipeline in .circleci/config.yml. Use gha.sh for GitHub Actions operations.
+Trigger commands (require --yes unless --dry-run):
+  trigger [options]              Trigger the repository's default pipeline.
+  tests [selectors]              Trigger tests using discovered run_* parameters.
 
-Trigger commands:
-  tests [selectors]            Trigger the integration tests pipeline.
+Read-only triage commands:
+  list [options]                 List recent pipelines.
+  await <pipeline-id>            Poll a pipeline to a terminal state.
+  watch <pipeline-id>            Alias for await.
+  view <pipeline-id>             List a pipeline's workflows.
+  status <pipeline-id>           Alias for view.
+  jobs <workflow-id>             List a workflow's jobs.
+  job <job-number>               Show step status and log URLs when supported.
+  definitions                    List pipeline definitions.
 
-CircleCI triage commands (read-only unless noted):
-  list [options]               List recent pipelines.
-  await <pipeline-id>          Poll a pipeline to a terminal state.
-  watch <pipeline-id>          Alias for await.
-  view <pipeline-id>           List a pipeline's workflows (name, status, id).
-  status <pipeline-id>         Alias for view.
-  jobs <workflow-id>           List a workflow's jobs (number, status, name).
-  job <job-number>             Per-step detail + failure log URLs for a job.
-  cancel <workflow-id> --yes   Cancel a running workflow.
+Write commands (require --yes unless --dry-run):
+  cancel <workflow-id>           Cancel a running workflow.
+  delete-definition <name|id>    Delete a pipeline definition.
 
-Legacy CircleCI definition cleanup:
-  definitions                  List leftover pipeline definitions. Read-only.
-  delete-definition <name>     Delete a leftover multi-config definition by name.
+Selection options (accepted by every command):
+  --project VCS/OWNER/REPO        CircleCI slug, for example gh/owner/repo.
+  --remote NAME                   Git remote used for project discovery.
 
-  help                         Show this help text.
+Trigger options:
+  --branch REF                    Branch to trigger.
+  --parameter KEY=VALUE           Pipeline parameter; repeatable.
+  --parameters-json OBJECT        Exact JSON object of pipeline parameters.
+  --watch                         Wait for the triggered pipeline.
+  --yes                           Confirm the outward action.
+  --dry-run                       Print the API request without credentials/network.
 
-tests selectors (default: every integration job):
-  --all                        Every module job (run_tests).
-  --module <name>              One module's integration job (repeatable): bubble,
-                               claude-scuba, codex-scuba, reef, starfish, playwright.
+tests selectors:
+  --all                           Use run_tests=true when declared by local config.
+  --module NAME                   Use run_NAME=true when declared; repeatable.
 
-Common options:
-  --yes                        Confirm a trigger / write (every trigger costs CircleCI minutes).
-  --dry-run                    Print the API call(s) without running them.
-  --watch                      Poll the triggered pipeline(s) to completion.
+Environment overrides:
+  CIRCLECI_TOKEN, CIRCLECI_PROJECT_SLUG, CIRCLECI_PROJECT_V1,
+  CI_REMOTE, CI_BRANCH, CIRCLECI_API, CIRCLECI_API_V1
 
 Examples:
-  circleci.sh tests --module bubble --module reef --yes
-  circleci.sh tests --all --yes --watch
-  circleci.sh list --branch dev
-  circleci.sh view <pipeline-id>
-  circleci.sh definitions
-  circleci.sh delete-definition tests --yes
+  circleci.sh trigger --branch feature/name --parameter smoke=true --dry-run
+  circleci.sh tests --branch feature/name --module api --dry-run
+  circleci.sh list --branch feature/name --project gh/owner/repo --dry-run
+  circleci.sh cancel <workflow-id> --dry-run
 USAGE
 }
 
@@ -101,126 +77,332 @@ log() {
   printf '==> %s\n' "$*"
 }
 
-require_node() {
-  command -v node >/dev/null 2>&1 || die "node is required for JSON handling but was not found on PATH"
+print_command() {
+  printf '+'
+  printf ' %q' "$@"
+  printf '\n'
 }
 
-# Triggering CI is an outward (paid) action; dry-run is always allowed, otherwise
-# --yes is mandatory. No interactive TTY is assumed.
+require_jq() {
+  command -v jq >/dev/null 2>&1 || die "jq is required for CircleCI JSON handling"
+}
+
+require_curl() {
+  command -v curl >/dev/null 2>&1 || die "curl is required for CircleCI API operations"
+}
+
 require_confirmation() {
   ((dry_run)) && return 0
   ((assume_yes)) && return 0
-  die "$1 is an outward action (CircleCI trigger or config change); re-run with --yes to confirm (or --dry-run to preview)"
+  die "$1 changes remote CI state and may consume CI capacity; re-run with --yes (or --dry-run to preview)"
 }
 
-load_env() {
-  if [[ -z "${CIRCLECI_TOKEN:-}" && -f "${env_file}" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "${env_file}" 2>/dev/null || true
-    set +a
-  fi
-  [[ -n "${CIRCLECI_TOKEN:-}" ]] || die "CIRCLECI_TOKEN not set and not readable from ${env_file}.
-       Create it:  cp ${skill_root}/.env.example ${env_file}  (then fill in the token)"
-}
-
-# --- Trigger + watch ---------------------------------------------------------
-
-# Trigger the default CircleCI config with a parameters JSON object; echo the new
-# pipeline id (or a placeholder on dry-run).
-circleci_run() {
-  local params="$1" payload
-  payload="$(printf '{"branch":"%s","parameters":%s}' "${CI_BRANCH}" "${params}")"
-  if ((dry_run)); then
-    printf '+ curl -X POST %s/project/%s/pipeline -d %q\n' "${CIRCLE_API}" "${CIRCLE_PROJECT_SLUG}" "${payload}" >&2
-    printf 'DRYRUN_PIPELINE_ID\n'
-    return 0
-  fi
-
-  load_env
-  local body id
-  body="$(curl -s -X POST \
-    -H "Circle-Token: ${CIRCLECI_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "${payload}" \
-    "${CIRCLE_API}/project/${CIRCLE_PROJECT_SLUG}/pipeline")"
-  id="$(printf '%s' "${body}" | node -e 'const s=require("fs").readFileSync(0,"utf8");let j;try{j=JSON.parse(s)}catch(e){process.exit(1)};process.stdout.write(j.id||"")')" ||
-    die "could not parse CircleCI response: ${body}"
-  [[ -n "${id}" ]] || die "CircleCI did not return a pipeline id. Response: ${body}"
-  printf '%s\n' "${id}"
-}
-
-watch_circleci() {
-  local pid="$1"
-  if ((dry_run)) || [[ "${pid}" == "DRYRUN_PIPELINE_ID" ]]; then
-    log "(dry-run) would poll pipeline ${pid} to completion"
-    return 0
-  fi
-  load_env
-  log "Watching pipeline ${pid} (${CIRCLE_UI})"
-
-  local tries=0 max=240 body code
-  while ((tries < max)); do
-    body="$(curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" "${CIRCLE_API}/pipeline/${pid}/workflow")" || body=""
-    set +e
-    printf '%s' "${body}" | node -e '
-      const s = require("fs").readFileSync(0, "utf8");
-      let j; try { j = JSON.parse(s); } catch (e) { process.exit(3); }
-      const items = j.items || [];
-      if (!items.length) process.exit(2);
-      const pending = new Set(["running","failing","on_hold","created","pending","new","queued"]);
-      let pend = 0, bad = 0;
-      for (const w of items) {
-        process.stderr.write("    " + w.name + ": " + w.status + "\n");
-        if (pending.has(w.status)) pend++;
-        else if (w.status !== "success") bad++;
-      }
-      if (pend) process.exit(10);
-      process.exit(bad ? 1 : 0);
-    '
-    code=$?
-    set -e
-    case "${code}" in
-      0)
-        log "All workflows succeeded for ${pid}"
-        return 0
+parse_common_options() {
+  REMAINING=()
+  while (($#)); do
+    case "$1" in
+      --project)
+        shift
+        (($#)) || die "--project requires a value"
+        project_override="$1"
         ;;
-      1)
-        log "One or more workflows did not succeed for ${pid}"
-        return 1
+      --project=*) project_override="${1#*=}" ;;
+      --remote)
+        shift
+        (($#)) || die "--remote requires a value"
+        remote_override="$1"
         ;;
-      2 | 3) ;; # no workflows yet / transient parse: keep polling
-      10) printf '    ...still running\n' ;;
-      *) ;;
+      --remote=*) remote_override="${1#*=}" ;;
+      *) REMAINING+=("$1") ;;
     esac
-    sleep 15
-    ((++tries))
+    shift
   done
-  die "timed out watching pipeline ${pid}"
 }
 
-# --- Parameter builders ------------------------------------------------------
+# Load only known literal KEY=VALUE entries. Never eval a credential file.
+load_env_file() {
+  [[ -f "${env_file}" ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "${line}" && "${line}" != \#* ]] || continue
+    [[ "${line}" == export\ * ]] && line="${line#export }"
+    [[ "${line}" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+      value="${value#\"}"
+      value="${value%\"}"
+    elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+      value="${value#\'}"
+      value="${value%\'}"
+    fi
+    case "${key}" in
+      CIRCLECI_TOKEN) [[ -n "${CIRCLECI_TOKEN:-}" ]] || CIRCLECI_TOKEN="${value}" ;;
+      CIRCLECI_PROJECT_SLUG) [[ -n "${CIRCLECI_PROJECT_SLUG:-}" ]] || CIRCLECI_PROJECT_SLUG="${value}" ;;
+      CIRCLECI_PROJECT_V1) [[ -n "${CIRCLECI_PROJECT_V1:-}" ]] || CIRCLECI_PROJECT_V1="${value}" ;;
+      CI_REMOTE) [[ -n "${CI_REMOTE:-}" ]] || CI_REMOTE="${value}" ;;
+      CI_BRANCH) [[ -n "${CI_BRANCH:-}" ]] || CI_BRANCH="${value}" ;;
+    esac
+  done < "${env_file}"
+  [[ -n "${remote_override}" ]] || remote_override="${CI_REMOTE:-}"
+}
 
-# Build a parameters JSON object from --module selectors (env: MODULES).
-build_test_params() {
-  ALLOWED_MODULES="${TEST_MODULES}" node -e '
-    const norm = (s) => s.replace(/-/g, "_");
-    const modules = (process.env.MODULES || "").split(",").filter(Boolean);
-    const M = new Set((process.env.ALLOWED_MODULES || "").split(" ").filter(Boolean));
-    const out = {};
-    for (const m of modules) {
-      const k = norm(m);
-      if (!M.has(k)) { console.error("unknown --module: " + m); process.exit(2); }
-      out["run_" + k] = true;
-    }
-    process.stdout.write(JSON.stringify(out));
+require_token() {
+  [[ -n "${CIRCLECI_TOKEN:-}" ]] ||
+    die "CIRCLECI_TOKEN is unset; export it or copy ${skill_root}/.env.example to ${env_file} and fill the local .env"
+}
+
+# Feed the credential as a header on stdin so it never appears in curl's argv.
+circle_curl() {
+  [[ -n "${CIRCLECI_TOKEN:-}" ]] || die "CIRCLECI_TOKEN is unset"
+  printf 'Circle-Token: %s\n' "${CIRCLECI_TOKEN}" | curl --header @- "$@"
+}
+
+selected_remote() {
+  if [[ -n "${remote_override}" ]]; then
+    git remote get-url "${remote_override}" >/dev/null 2>&1 ||
+      die "git remote '${remote_override}' does not exist"
+    printf '%s\n' "${remote_override}"
+    return 0
+  fi
+  if git remote get-url upstream >/dev/null 2>&1; then
+    printf 'upstream\n'
+  elif git remote get-url origin >/dev/null 2>&1; then
+    printf 'origin\n'
+  else
+    git remote 2>/dev/null | sed -n '1p'
+  fi
+}
+
+circle_project_from_value() {
+  local value="$1" host="" path="" rest="" vcs=""
+  value="${value%/}"
+  value="${value%.git}"
+  case "${value}" in
+    gh/*/* | bb/*/* | gl/*/*) printf '%s\n' "${value}"; return 0 ;;
+    github/*/*) printf 'gh/%s\n' "${value#github/}"; return 0 ;;
+    bitbucket/*/*) printf 'bb/%s\n' "${value#bitbucket/}"; return 0 ;;
+    git@*:* )
+      host="${value#git@}"
+      host="${host%%:*}"
+      path="${value#*:}"
+      ;;
+    ssh://* | https://* | http://* )
+      rest="${value#*://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      ;;
+    *) return 1 ;;
+  esac
+  path="${path#/}"
+  path="${path%.git}"
+  [[ "${path}" == */* && "${path}" != */*/* ]] || return 1
+  case "${host}" in
+    github.com) vcs="gh" ;;
+    bitbucket.org) vcs="bb" ;;
+    gitlab.com) vcs="gl" ;;
+    *) return 1 ;;
+  esac
+  printf '%s/%s\n' "${vcs}" "${path}"
+}
+
+resolve_project() {
+  local value="${project_override:-${CIRCLECI_PROJECT_SLUG:-}}" remote url
+  if [[ -n "${value}" ]]; then
+    circle_project_from_value "${value}" ||
+      die "cannot parse CircleCI project '${value}'; expected gh/owner/repository or a known VCS URL"
+    return 0
+  fi
+  remote="$(selected_remote)"
+  [[ -n "${remote}" ]] || die "cannot discover a git remote; pass --project VCS/OWNER/REPO"
+  url="$(git remote get-url "${remote}")"
+  circle_project_from_value "${url}" ||
+    die "cannot derive a CircleCI slug from remote '${remote}'; pass --project"
+}
+
+resolve_project_v1() {
+  if [[ -n "${CIRCLECI_PROJECT_V1:-}" ]]; then
+    printf '%s\n' "${CIRCLECI_PROJECT_V1}"
+    return 0
+  fi
+  local project="$1"
+  case "${project}" in
+    gh/*) printf 'github/%s\n' "${project#gh/}" ;;
+    bb/*) printf 'bitbucket/%s\n' "${project#bb/}" ;;
+    *) die "job detail needs CIRCLECI_PROJECT_V1 for project '${project}'" ;;
+  esac
+}
+
+default_branch() {
+  if [[ -n "${CI_BRANCH:-}" ]]; then
+    printf '%s\n' "${CI_BRANCH}"
+    return 0
+  fi
+  local branch remote ref
+  branch="$(git branch --show-current 2>/dev/null || true)"
+  if [[ -n "${branch}" ]]; then
+    printf '%s\n' "${branch}"
+    return 0
+  fi
+  remote="$(selected_remote)"
+  [[ -n "${remote}" ]] || return 1
+  ref="$(git symbolic-ref --quiet --short "refs/remotes/${remote}/HEAD" 2>/dev/null || true)"
+  [[ -n "${ref}" ]] || return 1
+  printf '%s\n' "${ref#${remote}/}"
+}
+
+circle_config() {
+  local root
+  root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "${root}" ]] || return 1
+  if [[ -f "${root}/.circleci/config.yml" ]]; then
+    printf '%s\n' "${root}/.circleci/config.yml"
+  elif [[ -f "${root}/.circleci/config.yaml" ]]; then
+    printf '%s\n' "${root}/.circleci/config.yaml"
+  else
+    return 1
+  fi
+}
+
+config_declares_parameter() {
+  local name="$1" config
+  [[ "${name}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 1
+  config="$(circle_config)" || return 1
+  awk -v want="${name}" '
+    /^parameters:[[:space:]]*(#.*)?$/ { in_parameters=1; next }
+    in_parameters && /^[^[:space:]#]/ { in_parameters=0 }
+    in_parameters && $0 ~ "^[[:space:]][[:space:]]" want ":[[:space:]]*" { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' "${config}"
+}
+
+json_value() {
+  local value="$1"
+  jq -cn --arg value "${value}" '
+    if $value == "true" then true
+    elif $value == "false" then false
+    elif $value == "null" then null
+    elif ($value | test("^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$")) then ($value | tonumber)
+    else $value
+    end
   '
 }
 
-# --- Commands ----------------------------------------------------------------
+add_parameter() {
+  local object="$1" pair="$2" key value encoded
+  [[ "${pair}" == *=* ]] || die "--parameter requires KEY=VALUE"
+  key="${pair%%=*}"
+  value="${pair#*=}"
+  [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "invalid pipeline parameter name '${key}'"
+  encoded="$(json_value "${value}")"
+  jq -cn --argjson object "${object}" --arg key "${key}" --argjson value "${encoded}" \
+    '$object + {($key): $value}'
+}
 
-cmd_list() {
-  local branch="${CI_BRANCH}" limit=10 page_token=""
+api_v2() {
+  printf '%s\n' "${CIRCLECI_API:-${CIRCLE_API_DEFAULT}}"
+}
+
+api_v1() {
+  printf '%s\n' "${CIRCLECI_API_V1:-${CIRCLE_API_V1_DEFAULT}}"
+}
+
+pipeline_ui() {
+  local project="$1" v1
+  if [[ -n "${CIRCLECI_UI_URL:-}" ]]; then
+    printf '%s\n' "${CIRCLECI_UI_URL}"
+    return 0
+  fi
+  v1="$(resolve_project_v1 "${project}" 2>/dev/null || true)"
+  if [[ -n "${v1}" ]]; then
+    printf 'https://app.circleci.com/pipelines/%s\n' "${v1}"
+  else
+    printf 'https://app.circleci.com/pipelines\n'
+  fi
+}
+
+prepare_live() {
+  require_curl
+  require_jq
+  load_env_file
+  require_token
+}
+
+trigger_pipeline() {
+  local branch="$1" parameters="$2" watch="$3" timeout="$4" interval="$5"
+  require_confirmation "trigger"
+  require_jq
+  if ((!dry_run)); then
+    prepare_live
+  fi
+  [[ -n "${branch}" ]] || branch="${CI_BRANCH:-}"
+  [[ -n "${branch}" ]] ||
+    die "trigger requires an explicit --branch (or CI_BRANCH); do not infer a mutation ref across fork/upstream remotes"
+  local project payload url pipeline_id body
+  project="$(resolve_project)"
+  payload="$(jq -cn --arg branch "${branch}" --argjson parameters "${parameters}" \
+    '{branch:$branch, parameters:$parameters}')"
+  url="$(api_v2)/project/${project}/pipeline"
+  log "CircleCI project=${project} branch=${branch} parameters=${parameters}"
+  if ((dry_run)); then
+    print_command curl -X POST -H 'Circle-Token: <redacted>' -H 'Content-Type: application/json' --data "${payload}" "${url}"
+    ((watch)) && log "(dry-run) would watch the returned pipeline id"
+    return 0
+  fi
+  body="$(circle_curl -sS -X POST -H 'Content-Type: application/json' \
+    --data "${payload}" "${url}")"
+  pipeline_id="$(printf '%s' "${body}" | jq -r '.id // empty')"
+  [[ -n "${pipeline_id}" ]] || die "CircleCI did not return a pipeline id: ${body}"
+  log "pipeline=${pipeline_id} $(pipeline_ui "${project}")"
+  ((watch)) && watch_pipeline "${pipeline_id}" "${timeout}" "${interval}"
+}
+
+watch_pipeline() {
+  local pipeline_id="$1" timeout="${2:-3600}" interval="${3:-15}"
+  [[ "${timeout}" =~ ^[0-9]+$ && "${interval}" =~ ^[1-9][0-9]*$ ]] ||
+    die "timeout and interval must be non-negative/positive integer seconds"
+  if ((dry_run)); then
+    print_command curl -H 'Circle-Token: <redacted>' "$(api_v2)/pipeline/${pipeline_id}/workflow"
+    return 0
+  fi
+  prepare_live
+  local elapsed=0 body statuses status pending bad
+  while ((elapsed <= timeout)); do
+    body="$(circle_curl -sS "$(api_v2)/pipeline/${pipeline_id}/workflow")"
+    statuses="$(printf '%s' "${body}" | jq -r '.items[]?.status')"
+    if [[ -n "${statuses}" ]]; then
+      pending=0
+      bad=0
+      while IFS= read -r status; do
+        printf '    %s\n' "${status}"
+        case "${status}" in
+          running | failing | on_hold | created | pending | new | queued) pending=1 ;;
+          success) ;;
+          *) bad=1 ;;
+        esac
+      done <<< "${statuses}"
+      if ((pending == 0)); then
+        ((bad == 0)) && return 0
+        return 1
+      fi
+    fi
+    ((elapsed == timeout)) && break
+    sleep "${interval}"
+    elapsed=$((elapsed + interval))
+  done
+  die "timed out after ${timeout}s watching pipeline ${pipeline_id}"
+}
+
+cmd_trigger() {
+  dry_run=0
+  assume_yes=0
+  local branch="" watch=0 timeout=3600 interval=15 parameters='{}' exact_json="" pair
+  local -a pairs=()
   while (($#)); do
     case "$1" in
       --branch | --ref | -b)
@@ -228,338 +410,399 @@ cmd_list() {
         (($#)) || die "--branch requires a value"
         branch="$1"
         ;;
-      --limit | -n)
+      --parameter | -p)
         shift
-        (($#)) || die "--limit requires a value"
-        limit="$1"
+        (($#)) || die "--parameter requires KEY=VALUE"
+        pairs+=("$1")
         ;;
+      --parameters-json)
+        shift
+        (($#)) || die "--parameters-json requires an object"
+        exact_json="$1"
+        ;;
+      --watch) watch=1 ;;
+      --timeout)
+        shift
+        (($#)) || die "--timeout requires seconds"
+        timeout="$1"
+        ;;
+      --interval)
+        shift
+        (($#)) || die "--interval requires seconds"
+        interval="$1"
+        ;;
+      --yes) assume_yes=1 ;;
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        cat <<'USAGE'
-Usage: circleci.sh list [--branch dev] [--limit 10]
-USAGE
+        printf '%s\n' 'Usage: circleci.sh trigger [--branch REF] [--parameter KEY=VALUE ... | --parameters-json OBJECT] [--watch] --yes'
         return 0
         ;;
-      *) die "Unknown list option: $1" ;;
+      *) die "unknown trigger option: $1" ;;
     esac
     shift
   done
-  require_node
-  load_env
-
-  local url="${CIRCLE_API}/project/${CIRCLE_PROJECT_SLUG}/pipeline?branch=${branch}"
-  if [[ -n "${page_token}" ]]; then
-    url="${url}&page-token=${page_token}"
+  require_jq
+  if [[ -n "${exact_json}" ]]; then
+    ((${#pairs[@]} == 0)) || die "combine neither --parameters-json nor --parameter"
+    parameters="$(printf '%s' "${exact_json}" | jq -ce 'select(type == "object")')" ||
+      die "--parameters-json must be a valid JSON object"
+  else
+    for pair in "${pairs[@]}"; do
+      parameters="$(add_parameter "${parameters}" "${pair}")"
+    done
   fi
-  curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" "${url}" | LIMIT="${limit}" node -e '
-    const j = JSON.parse(require("fs").readFileSync(0, "utf8"));
-    const limit = Number(process.env.LIMIT || 10);
-    const items = (j.items || []).slice(0, limit);
-    if (!items.length) { console.log("(no pipelines)"); process.exit(0); }
-    for (const p of items) {
-      const vcs = p.vcs || {};
-      const rev = vcs.revision ? String(vcs.revision).slice(0, 12) : "-";
-      console.log([p.id, p.state || "-", p.created_at || "-", rev].join("  "));
-    }
-  '
+  trigger_pipeline "${branch}" "${parameters}" "${watch}" "${timeout}" "${interval}"
 }
 
 cmd_tests() {
   dry_run=0
   assume_yes=0
-  local watch=0 all=0
-  local modules=""
+  local branch="" watch=0 timeout=3600 interval=15 all=0 parameters='{}' module pair param
+  local -a modules=() pairs=()
   while (($#)); do
     case "$1" in
       --all) all=1 ;;
       --module | -m)
         shift
-        [[ $# -gt 0 ]] || die "--module needs a name"
-        modules="${modules:+${modules},}$1"
+        (($#)) || die "--module requires a value"
+        modules+=("$1")
+        ;;
+      --parameter | -p)
+        shift
+        (($#)) || die "--parameter requires KEY=VALUE"
+        pairs+=("$1")
+        ;;
+      --branch | --ref | -b)
+        shift
+        (($#)) || die "--branch requires a value"
+        branch="$1"
+        ;;
+      --watch) watch=1 ;;
+      --timeout)
+        shift
+        (($#)) || die "--timeout requires seconds"
+        timeout="$1"
+        ;;
+      --interval)
+        shift
+        (($#)) || die "--interval requires seconds"
+        interval="$1"
         ;;
       --yes) assume_yes=1 ;;
       --dry-run) dry_run=1 ;;
-      --watch) watch=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh tests [--all | --module NAME ...] [--parameter KEY=VALUE ...] [--branch REF] --yes'
         return 0
         ;;
-      *) die "Unknown tests option: $1" ;;
+      *) die "unknown tests option: $1" ;;
     esac
     shift
   done
-  require_node
-
-  local params
-  if ((all)) || [[ -z "${modules}" ]]; then
-    params='{"run_tests":true}'
-  else
-    params="$(MODULES="${modules}" build_test_params)" ||
-      die "invalid tests selector"
+  require_jq
+  circle_config >/dev/null ||
+    die "tests requires a local .circleci/config.yml or config.yaml; use trigger for a configless/manual pipeline call"
+  if ((all)) && ! config_declares_parameter run_tests; then
+    die "--all requires the local CircleCI config to declare the run_tests pipeline parameter"
   fi
+  if ((${#modules[@]})); then
+    for module in "${modules[@]}"; do
+      module="${module//-/_}"
+      [[ "${module}" =~ ^[A-Za-z0-9_]+$ ]] || die "invalid module selector '${module}'"
+      param="run_${module}"
+      config_declares_parameter "${param}" ||
+        die "local CircleCI config does not declare '${param}'; use trigger --parameter KEY=VALUE"
+      parameters="$(add_parameter "${parameters}" "${param}=true")"
+    done
+  elif ((all)) || config_declares_parameter run_tests; then
+    parameters="$(add_parameter "${parameters}" 'run_tests=true')"
+  fi
+  for pair in "${pairs[@]}"; do
+    parameters="$(add_parameter "${parameters}" "${pair}")"
+  done
+  trigger_pipeline "${branch}" "${parameters}" "${watch}" "${timeout}" "${interval}"
+}
 
-  require_confirmation "tests"
-  log "Triggering CircleCI integration on ${CI_BRANCH} (parameters: ${params})"
-  local pid
-  pid="$(circleci_run "${params}")"
-  log "Pipeline: ${pid}  ->  ${CIRCLE_UI}"
-  ((watch)) && watch_circleci "${pid}"
-  return 0
+cmd_list() {
+  dry_run=0
+  local branch="" limit=10 branch_set=0
+  while (($#)); do
+    case "$1" in
+      --branch | --ref | -b)
+        shift
+        (($#)) || die "--branch requires a value"
+        branch="$1"
+        branch_set=1
+        ;;
+      --limit | -n)
+        shift
+        (($#)) || die "--limit requires a value"
+        limit="$1"
+        ;;
+      --dry-run) dry_run=1 ;;
+      -h | --help)
+        printf '%s\n' 'Usage: circleci.sh list [--branch REF] [--limit N] [--project SLUG] [--dry-run]'
+        return 0
+        ;;
+      *) die "unknown list option: $1" ;;
+    esac
+    shift
+  done
+  [[ "${limit}" =~ ^[1-9][0-9]*$ ]] || die "--limit must be a positive integer"
+  if ((!dry_run)); then prepare_live; else require_jq; fi
+  ((branch_set)) || branch="$(default_branch || true)"
+  local project url body
+  project="$(resolve_project)"
+  url="$(api_v2)/project/${project}/pipeline"
+  if ((dry_run)); then
+    if [[ -n "${branch}" ]]; then
+      print_command curl -G -H 'Circle-Token: <redacted>' --data-urlencode "branch=${branch}" "${url}"
+    else
+      print_command curl -G -H 'Circle-Token: <redacted>' "${url}"
+    fi
+    return 0
+  fi
+  if [[ -n "${branch}" ]]; then
+    body="$(circle_curl -sS -G --data-urlencode "branch=${branch}" "${url}")"
+  else
+    body="$(circle_curl -sS -G "${url}")"
+  fi
+  printf '%s' "${body}" | jq -r --argjson limit "${limit}" '
+    (.items // [])[:$limit][] |
+    [.id, (.state // "-"), (.created_at // "-"), ((.vcs.revision // "-")[:12])] | @tsv
+  '
 }
 
 cmd_await() {
   dry_run=0
-  local pid=""
+  local pipeline_id="" timeout=3600 interval=15
   while (($#)); do
     case "$1" in
+      --timeout)
+        shift
+        (($#)) || die "--timeout requires seconds"
+        timeout="$1"
+        ;;
+      --interval)
+        shift
+        (($#)) || die "--interval requires seconds"
+        interval="$1"
+        ;;
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh await <pipeline-id> [--timeout SEC] [--dry-run]'
         return 0
         ;;
+      -*) die "unknown await option: $1" ;;
       *)
-        [[ -z "${pid}" ]] || die "await takes a single pipeline id"
-        pid="$1"
+        [[ -z "${pipeline_id}" ]] || die "await takes one pipeline id"
+        pipeline_id="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${pid}" ]] || die "await requires a pipeline id"
-  require_node
-  watch_circleci "${pid}"
+  [[ -n "${pipeline_id}" ]] || die "await requires a pipeline id"
+  watch_pipeline "${pipeline_id}" "${timeout}" "${interval}"
 }
 
-cmd_watch() {
-  cmd_await "$@"
-}
-
-# --- Triage ------------------------------------------------------------------
-
-# List the workflows of a pipeline (name, status, id). Read-only.
 cmd_view() {
-  local pid=""
+  dry_run=0
+  local pipeline_id=""
   while (($#)); do
     case "$1" in
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh view <pipeline-id> [--dry-run]'
         return 0
         ;;
-      -*) die "Unknown view option: $1" ;;
+      -*) die "unknown view option: $1" ;;
       *)
-        [[ -z "${pid}" ]] || die "view takes a single pipeline id"
-        pid="$1"
+        [[ -z "${pipeline_id}" ]] || die "view takes one pipeline id"
+        pipeline_id="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${pid}" ]] || die "view requires a pipeline id (printed when you trigger)"
-  require_node
-  load_env
-  curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" "${CIRCLE_API}/pipeline/${pid}/workflow" | node -e '
-    const j=JSON.parse(require("fs").readFileSync(0,"utf8"));
-    const it=j.items||[];
-    if(!it.length){console.log("(no workflows - gate produced none, or still processing)");process.exit(0)}
-    for(const w of it) console.log(String(w.status).padEnd(10), w.name, " ", w.id);
-  '
+  [[ -n "${pipeline_id}" ]] || die "view requires a pipeline id"
+  local url="$(api_v2)/pipeline/${pipeline_id}/workflow"
+  if ((dry_run)); then
+    print_command curl -H 'Circle-Token: <redacted>' "${url}"
+    return 0
+  fi
+  prepare_live
+  circle_curl -sS "${url}" |
+    jq -r '(.items // [])[] | [.name, .status, .id] | @tsv'
 }
 
-cmd_status() {
-  cmd_view "$@"
-}
-
-# List the jobs of a workflow (number, status, name). Read-only.
 cmd_jobs() {
-  local wf=""
+  dry_run=0
+  local workflow_id=""
   while (($#)); do
     case "$1" in
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh jobs <workflow-id> [--dry-run]'
         return 0
         ;;
-      -*) die "Unknown jobs option: $1" ;;
+      -*) die "unknown jobs option: $1" ;;
       *)
-        [[ -z "${wf}" ]] || die "jobs takes a single workflow id"
-        wf="$1"
+        [[ -z "${workflow_id}" ]] || die "jobs takes one workflow id"
+        workflow_id="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${wf}" ]] || die "jobs requires a workflow id (from 'circleci.sh view <pipeline-id>')"
-  require_node
-  load_env
-  curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" "${CIRCLE_API}/workflow/${wf}/job" | node -e '
-    const j=JSON.parse(require("fs").readFileSync(0,"utf8"));
-    const it=j.items||[];
-    if(!it.length){console.log("(no jobs)");process.exit(0)}
-    for(const job of it) console.log(String(job.job_number||"-").padEnd(7), String(job.status).padEnd(10), job.name);
-  '
+  [[ -n "${workflow_id}" ]] || die "jobs requires a workflow id"
+  local url="$(api_v2)/workflow/${workflow_id}/job"
+  if ((dry_run)); then
+    print_command curl -H 'Circle-Token: <redacted>' "${url}"
+    return 0
+  fi
+  prepare_live
+  circle_curl -sS "${url}" |
+    jq -r '(.items // [])[] | [(.job_number // "-"), .status, .name] | @tsv'
 }
 
-# Print step/action detail for a job number (legacy v1.1 exposes per-action
-# status + log output URLs - handy for a failing job). Read-only.
 cmd_job() {
-  local num=""
+  dry_run=0
+  local job_number=""
   while (($#)); do
     case "$1" in
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh job <job-number> [--project SLUG] [--dry-run]'
         return 0
         ;;
-      -*) die "Unknown job option: $1" ;;
+      -*) die "unknown job option: $1" ;;
       *)
-        [[ -z "${num}" ]] || die "job takes a single job number"
-        num="$1"
+        [[ -z "${job_number}" ]] || die "job takes one job number"
+        job_number="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${num}" ]] || die "job requires a job number (from 'circleci.sh jobs <workflow-id>')"
-  require_node
-  load_env
-  curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" "${CIRCLE_API_V1}/project/${CIRCLE_PROJECT_V1}/${num}" | node -e '
-    const j=JSON.parse(require("fs").readFileSync(0,"utf8"));
-    for(const s of (j.steps||[])){
-      for(const a of (s.actions||[])){
-        console.log(String(a.status).padEnd(10), a.name, a.failed? "  FAILED log: "+(a.output_url||""):"");
-      }
-    }
+  [[ -n "${job_number}" ]] || die "job requires a job number"
+  [[ "${job_number}" =~ ^[0-9]+$ ]] || die "job number must be numeric"
+  if ((!dry_run)); then prepare_live; fi
+  local project project_v1 url
+  project="$(resolve_project)"
+  project_v1="$(resolve_project_v1 "${project}")"
+  url="$(api_v1)/project/${project_v1}/${job_number}"
+  if ((dry_run)); then
+    print_command curl -H 'Circle-Token: <redacted>' "${url}"
+    return 0
+  fi
+  circle_curl -sS "${url}" | jq -r '
+    (.steps // [])[] | .actions[]? |
+    [.status, .name, (if .failed then (.output_url // "") else "" end)] | @tsv
   '
 }
 
-# Cancel a running workflow.
 cmd_cancel() {
   dry_run=0
   assume_yes=0
-  local wf=""
+  local workflow_id=""
   while (($#)); do
     case "$1" in
       --yes) assume_yes=1 ;;
       --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh cancel <workflow-id> --yes'
         return 0
         ;;
-      -*) die "Unknown cancel option: $1" ;;
+      -*) die "unknown cancel option: $1" ;;
       *)
-        [[ -z "${wf}" ]] || die "cancel takes a single workflow id"
-        wf="$1"
+        [[ -z "${workflow_id}" ]] || die "cancel takes one workflow id"
+        workflow_id="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${wf}" ]] || die "cancel requires a workflow id (from 'circleci.sh view <pipeline-id>')"
-  require_node
+  [[ -n "${workflow_id}" ]] || die "cancel requires a workflow id"
   require_confirmation "cancel"
+  local url="$(api_v2)/workflow/${workflow_id}/cancel"
   if ((dry_run)); then
-    printf '+ curl -X POST %s/workflow/%s/cancel\n' "${CIRCLE_API}" "${wf}"
+    print_command curl -X POST -H 'Circle-Token: <redacted>' "${url}"
     return 0
   fi
-  load_env
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-    -H "Circle-Token: ${CIRCLECI_TOKEN}" "${CIRCLE_API}/workflow/${wf}/cancel")"
-  log "cancel ${wf}: HTTP ${code}"
-  [[ "${code}" =~ ^2 ]] || die "cancel failed (HTTP ${code})"
+  prepare_live
+  circle_curl -sS -X POST "${url}" | jq .
 }
 
-# --- Legacy pipeline-definition cleanup -------------------------------------
-
 resolve_project_id() {
-  [[ -n "${project_id}" ]] && {
-    printf '%s\n' "${project_id}"
-    return 0
-  }
-  load_env
-  local body id
-  body="$(curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" \
-    "${CIRCLE_API}/project/${CIRCLE_PROJECT_SLUG}")" || return 1
-  id="$(printf '%s' "${body}" | node -e 'const s=require("fs").readFileSync(0,"utf8");let j;try{j=JSON.parse(s)}catch(e){process.exit(1)};process.stdout.write(j.id||"")')" || return 1
-  [[ -n "${id}" ]] || return 1
-  project_id="${id}"
+  local project="$1" body id
+  body="$(circle_curl -sS "$(api_v2)/project/${project}")"
+  id="$(printf '%s' "${body}" | jq -r '.id // empty')"
+  [[ -n "${id}" ]] || die "could not resolve CircleCI project id for ${project}"
   printf '%s\n' "${id}"
 }
 
-fetch_definitions_json() {
-  local pid
-  pid="$(resolve_project_id)" || return 1
-  load_env
-  curl -s -H "Circle-Token: ${CIRCLECI_TOKEN}" \
-    "${CIRCLE_API}/projects/${pid}/pipeline-definitions"
-}
-
-discover_definition_id() {
-  local name="$1"
-  fetch_definitions_json | node -e '
-    const s = require("fs").readFileSync(0, "utf8");
-    let j; try { j = JSON.parse(s); } catch (e) { process.exit(1); }
-    const want = (process.argv[1] || "").toLowerCase();
-    const hit = (j.items || []).find((d) => String(d.name || "").toLowerCase() === want);
-    process.stdout.write(hit && hit.id ? hit.id : "");
-  ' "${name}"
-}
-
 cmd_definitions() {
+  dry_run=0
   while (($#)); do
     case "$1" in
+      --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh definitions [--project SLUG] [--dry-run]'
         return 0
         ;;
-      *) die "Unknown definitions option: $1" ;;
+      *) die "unknown definitions option: $1" ;;
     esac
     shift
   done
-  require_node
-  fetch_definitions_json | node -e '
-    const s = require("fs").readFileSync(0, "utf8");
-    let j; try { j = JSON.parse(s); } catch (e) { console.error(s); process.exit(1); }
-    const items = j.items || [];
-    if (!items.length) { console.log("(no pipeline definitions found)"); process.exit(0); }
-    for (const d of items) {
-      console.log([d.id, d.name, (d.config_source && d.config_source.file_path) || ""].join("  "));
-    }
-  '
+  if ((dry_run)); then
+    local project
+    project="$(resolve_project)"
+    print_command curl -H 'Circle-Token: <redacted>' "$(api_v2)/project/${project}"
+    print_command curl -H 'Circle-Token: <redacted>' "$(api_v2)/projects/<project-id>/pipeline-definitions"
+    return 0
+  fi
+  prepare_live
+  local project project_id
+  project="$(resolve_project)"
+  project_id="$(resolve_project_id "${project}")"
+  circle_curl -sS "$(api_v2)/projects/${project_id}/pipeline-definitions" |
+    jq -r '(.items // [])[] | [.id, .name, (.config_source.file_path // "")] | @tsv'
 }
 
-# Delete a leftover multi-config pipeline definition by name. This is only for
-# cleanup after reverting to the default .circleci/config.yml setup.
 cmd_delete_definition() {
   dry_run=0
   assume_yes=0
-  local name=""
+  local name_or_id=""
   while (($#)); do
     case "$1" in
       --yes) assume_yes=1 ;;
       --dry-run) dry_run=1 ;;
       -h | --help)
-        usage
+        printf '%s\n' 'Usage: circleci.sh delete-definition <name|id> --yes'
         return 0
         ;;
-      -*) die "Unknown delete-definition option: $1" ;;
+      -*) die "unknown delete-definition option: $1" ;;
       *)
-        [[ -z "${name}" ]] || die "delete-definition takes a single name"
-        name="$1"
+        [[ -z "${name_or_id}" ]] || die "delete-definition takes one name or id"
+        name_or_id="$1"
         ;;
     esac
     shift
   done
-  [[ -n "${name}" ]] || die "delete-definition requires a pipeline name"
-  require_node
+  [[ -n "${name_or_id}" ]] || die "delete-definition requires a name or id"
   require_confirmation "delete-definition"
-
-  local pid id
-  pid="$(resolve_project_id)" || die "could not resolve the project id for ${CIRCLE_PROJECT_SLUG}"
-  id="$(discover_definition_id "${name}")" || true
-  [[ -n "${id}" ]] || die "no pipeline definition named '${name}'"
   if ((dry_run)); then
-    printf '+ curl -X DELETE %s/projects/%s/pipeline-definitions/%s\n' "${CIRCLE_API}" "${pid}" "${id}"
+    local shown_id="${name_or_id}"
+    [[ "${shown_id}" == *-* ]] || shown_id="<definition-id-for:${name_or_id}>"
+    print_command curl -X DELETE -H 'Circle-Token: <redacted>' \
+      "$(api_v2)/projects/<project-id>/pipeline-definitions/${shown_id}"
     return 0
   fi
-  load_env
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-    -H "Circle-Token: ${CIRCLECI_TOKEN}" \
-    "${CIRCLE_API}/projects/${pid}/pipeline-definitions/${id}")"
-  log "delete ${name} (${id}): HTTP ${code}"
-  [[ "${code}" =~ ^2 ]] || die "delete failed (HTTP ${code})"
+  prepare_live
+  local project project_id definitions definition_id
+  project="$(resolve_project)"
+  project_id="$(resolve_project_id "${project}")"
+  definitions="$(circle_curl -sS "$(api_v2)/projects/${project_id}/pipeline-definitions")"
+  definition_id="$(printf '%s' "${definitions}" | jq -r --arg want "${name_or_id}" \
+    '(.items // []) | map(select(.id == $want or ((.name // "") | ascii_downcase) == ($want | ascii_downcase))) | .[0].id // empty')"
+  [[ -n "${definition_id}" ]] || die "no pipeline definition named or identified by '${name_or_id}'"
+  circle_curl -sS -X DELETE \
+    "$(api_v2)/projects/${project_id}/pipeline-definitions/${definition_id}" | jq .
 }
 
 main() {
@@ -567,22 +810,23 @@ main() {
     usage
     exit 1
   }
-  local cmd="$1"
+  local command="$1"
   shift
-  case "${cmd}" in
-    list) cmd_list "$@" ;;
+  parse_common_options "$@"
+  set -- "${REMAINING[@]}"
+  case "${command}" in
+    trigger) cmd_trigger "$@" ;;
     tests) cmd_tests "$@" ;;
-    await) cmd_await "$@" ;;
-    watch) cmd_watch "$@" ;;
-    view) cmd_view "$@" ;;
-    status) cmd_status "$@" ;;
+    list) cmd_list "$@" ;;
+    await | watch) cmd_await "$@" ;;
+    view | status) cmd_view "$@" ;;
     jobs) cmd_jobs "$@" ;;
     job) cmd_job "$@" ;;
     cancel) cmd_cancel "$@" ;;
     definitions) cmd_definitions "$@" ;;
     delete-definition) cmd_delete_definition "$@" ;;
     help | -h | --help) usage ;;
-    *) die "unknown command '${cmd}' (try: circleci.sh help)" ;;
+    *) die "unknown command '${command}' (try: circleci.sh help)" ;;
   esac
 }
 

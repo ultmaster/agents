@@ -1,142 +1,97 @@
 ---
 name: ci
-description: Use to run and triage OctoStaff umbrella CI. CI is split across two systems — GitHub Actions runs the build + lint/tsc + unit-tests job, and npm publish, firing automatically on push to dev / PRs / the vX.Y.Z tag; CircleCI runs only the large integration suites (Postgres testcontainers, docker-agent, Playwright), triggered manually. Use circleci.sh for CircleCI operations and gha.sh for GitHub Actions operations. Every CircleCI trigger costs minutes.
+description: Operate and diagnose repository CI safely across GitHub Actions and CircleCI. Use when a user asks to inspect checks, reproduce a CI failure, read logs, wait for a run or pipeline, rerun or cancel work, or explicitly trigger CI. Discover providers, workflows, commands, repository, and branch from the current project instead of assuming a package manager or repository layout.
 ---
 
 # CI
 
-OctoStaff CI runs across two systems. Everything runs in the umbrella **monorepo**
-— all packages are in-tree (no submodules), so a checkout already has the whole
-workspace; CI just installs and builds it.
+## Orient from the repository
 
-| System             | What                                                          | Trigger                                          |
-| ------------------ | ------------------------------------------------------------- | ------------------------------------------------ |
-| **GitHub Actions** | `ci` (single `build-test` job: build + lint/tsc + unit tests) | automatic on push to `dev` + PRs targeting `dev` |
-| **GitHub Actions** | `release` (npm publish: sdk + bubble + claude-scuba + codex-scuba + reef) | automatic on the `vX.Y.Z` umbrella tag           |
-| **GitHub Actions** | `mirror` (content-sync packages to standalone repos)          | automatic on push to umbrella `main`             |
-| **CircleCI**       | integration suites only (`.circleci/config.yml`)              | manual, via `circleci.sh` (this skill)           |
+1. Read the repository's agent instructions and identify its root with
+   `git rev-parse --show-toplevel`.
+2. Discover providers from local configuration:
+   - GitHub Actions: `.github/workflows/*.yml` or `*.yaml`
+   - CircleCI: `.circleci/config.yml` or `config.yaml`
+3. Read the relevant workflow before acting. Copy its command, working directory,
+   runtime, service, and environment assumptions exactly. Discover the project's
+   package/build tool from its lockfiles, manifests, and scripts; never assume one.
+4. Resolve the remote deliberately. The helpers prefer `upstream` when it exists,
+   then `origin`; override with `--remote`, `CI_REMOTE`, `--repo`/`CI_REPO`, or
+   `--project`/`CIRCLECI_PROJECT_SLUG`.
 
-The integration suites stay on CircleCI because they need a real Docker daemon
-(testcontainers Postgres, `docker agent serve a2a`), a browser, or a stable
-pixel-rendering env — CircleCI's `machine` VMs. The cheap/fast build + lint/tsc + unit work
-moved to GitHub Actions (cheaper, auto on push). `circleci.sh` owns the
-CircleCI integration pipeline and triggers the default `.circleci/config.yml`;
-`gha.sh` owns GitHub Actions triage/watch operations.
+## Reproduce before spending CI
 
-## GitHub Actions side — drive through the helper
+Run the narrow failing command locally first, then the widest relevant local group
+when shared code or test helpers changed. Match the CI command and environment as
+closely as practical. Before any trigger or rerun, state:
 
-```bash
-pnpm ci:gha <command> [options]                 # from the umbrella root
-<skill-root>/ci/scripts/gha.sh <command> [options]   # or by path
-```
+- what evidence the run should produce;
+- why local verification is insufficient; and
+- what each likely outcome changes next.
 
-The `mirror` workflow needs the repo secret `OCTOSTAFF_BOT_SSH_KEY` (octostaff-bot
-SSH private key, now with **write** access) to push each package out to its
-standalone repo; `release` also needs `NPM_TOKEN`. The `ci` workflow needs no
-secrets (the monorepo checkout already contains every package). Workflows live in
-`.github/workflows/`; the shared bootstrap is the composite `.github/actions/setup`.
+Do not use CI as an exploratory loop. Keep diagnostic instrumentation separate
+from the production fix when it could prevent the fix from building.
 
-**Commands:** `list`, `await`, `watch`, `view`, `rerun`, `cancel`.
+Live CI commands use network credentials and may need the harness's approved
+out-of-sandbox execution path. Do not work around sandbox policy. Run `--dry-run`
+locally first. Triggering, rerunning, cancelling, dispatching, and deleting require
+an explicit `--yes`; use them only when the user authorized the outward action.
 
-### GitHub Actions auth
+## GitHub Actions helper
 
-`gha.sh` checks `gh auth status -h github.com` before every live command. Configure
-one of these before using it:
+Use `scripts/gha.sh`. It wraps `gh run` while making repository selection visible.
 
 ```bash
-gh auth login --hostname github.com --git-protocol ssh --scopes repo,workflow
+scripts/gha.sh list --workflow ci.yml --branch feature/name --dry-run
+scripts/gha.sh await --workflow ci.yml --sha <commit> --dry-run
+scripts/gha.sh view <run-id> --failed --dry-run
+scripts/gha.sh rerun <run-id> --failed --dry-run
+scripts/gha.sh rerun <run-id> --failed --yes
+scripts/gha.sh dispatch ci.yml --ref feature/name --field key=value --dry-run
 ```
 
-For non-interactive use, set `GH_TOKEN` (or `GITHUB_TOKEN`) in the environment.
-The token must have access to `octostaff/umbrella`. Fine-grained tokens need
-**Actions: read** for `list` / `await` / `watch` / `view`, and **Actions: write**
-for `rerun` / `cancel`. Classic PATs should include `repo`; include `workflow`
-when the same credential is also used for workflow-file maintenance.
+Selection order is explicit flag, environment, then git discovery. `--repo` accepts
+`OWNER/REPO` or `HOST/OWNER/REPO`. Without `--workflow`, `list` and `await` search
+all workflows. Read-only branch-oriented commands use `CI_BRANCH`, the current
+branch, then the chosen remote's default branch. `dispatch` requires an explicit
+`--ref` or `CI_BRANCH`.
+
+Read-only commands: `list`, `await`, `watch`, `view`. Gated commands: `dispatch`,
+`rerun`, `cancel`. Authentication comes from `gh`; do not store GitHub tokens here.
+
+## CircleCI helper
+
+Use `scripts/circleci.sh`. Copy `.env.example` to `.env` only when a local token
+file is necessary, and never commit `.env`.
 
 ```bash
-gha.sh list --workflow ci.yml --branch dev
-gha.sh await --workflow ci.yml --branch dev --sha <commit-sha>
-gha.sh view <run-id> --failed
+scripts/circleci.sh trigger --branch feature/name --parameter run_tests=true --dry-run
+scripts/circleci.sh tests --module api --branch feature/name --dry-run
+scripts/circleci.sh list --branch feature/name
+scripts/circleci.sh view <pipeline-id>
+scripts/circleci.sh jobs <workflow-id>
+scripts/circleci.sh job <job-number>
+scripts/circleci.sh cancel <workflow-id> --dry-run
 ```
 
-## CircleCI side — drive through the helper
+`trigger` accepts repeatable `--parameter KEY=VALUE` or one
+`--parameters-json '{...}'`. Values `true`, `false`, `null`, and numbers retain
+their JSON types; other values are strings. `tests` is a compatibility convenience:
+it requires a local CircleCI config and discovers `run_tests` and `run_<module>`
+pipeline parameters from it; without either convention, it performs that config's
+ordinary parameterless trigger. Inspect the config before relying on any convention.
 
-Self-contained; reads its own `.env`:
+CircleCI project selection is `--project`, `CIRCLECI_PROJECT_SLUG`, then the chosen
+git remote. Every trigger requires an explicit `--branch` or `CI_BRANCH`, so a
+fork-only current branch cannot be inferred against the upstream project. Every
+trigger and mutation requires `--yes`; `--dry-run` never loads credentials or calls
+the network.
 
-```bash
-pnpm ci:circleci <command> [options]                  # from the umbrella root
-<skill-root>/ci/scripts/circleci.sh <command> [options]   # or by path
-```
+## Triage sequence
 
-`<skill-root>` is `.agents/skills` or `.claude/skills` (a symlink to it). Below,
-`circleci.sh` and `gha.sh` are shorthand for those paths (or their `pnpm ci:circleci`
-/ `pnpm ci:gha` umbrella-root aliases).
-
-### Commands
-
-**Trigger** — costs CircleCI minutes, requires `--yes`:
-
-- `tests [--all | --module <name> …]` — the integration pipeline; default runs every gating job. Modules: `bubble`, `claude-scuba`, `codex-scuba`, `reef`, `starfish`, `playwright`, `query-cost` (dashes/underscores interchangeable). **`query-cost` is opt-in only** — it is a profiling report, not a gate, and the priciest job here, so neither the default `tests` nor `release.sh preflight` lights it. Name it explicitly (`tests --module query-cost`) when query cost is what you are working on, then read the `profile-report` artifact off the job.
-
-**Triage** — read-only unless noted:
-
-- `list [--branch dev]` — recent pipelines.
-- `view <pipeline-id>` / `status <pipeline-id>` — a pipeline's workflows (name, status, id).
-- `jobs <workflow-id>` — a workflow's jobs (number, status, name).
-- `job <job-number>` — per-step detail + failure log URLs.
-- `await <pipeline-id>` / `watch <pipeline-id>` — poll a pipeline to a terminal state.
-- `cancel <workflow-id> --yes` — cancel a running workflow.
-
-**Legacy definition cleanup:**
-
-- `definitions` — list leftover multi-config pipeline definitions.
-- `delete-definition <name> --yes` — delete one by name.
-
-**Flags:** `--yes` confirms a trigger/write · `--dry-run` previews the API call · `--watch` polls a trigger to completion.
-
-### Typical flow
-
-```bash
-circleci.sh tests --module bubble --yes --watch   # one module's integration job, wait
-circleci.sh view <pipeline-id>                     # → workflow id
-circleci.sh jobs <workflow-id>                     # → job number
-circleci.sh job <job-number>                       # why it failed (steps + log URLs)
-```
-
-## Before triggering: reproduce locally FIRST. Always.
-
-> **CI costs money — CircleCI especially. Treat every trigger as a paid
-> measurement.** The user has flagged "you wasted CI again" more than once. A
-> green run on your machine under different conditions is **not** evidence the CI
-> run will pass. Only pass `--yes` when the user asked for a run.
-
-Before triggering CI:
-
-1. **Mirror the GHA `ci` build + `tsc` steps verbatim** from the umbrella root: `pnpm --filter '!@octostaff/office' --filter '!@octostaff/tui' -r --if-present tsc` (the bare `pnpm tsc` aggregate includes the unmaintained office/tui and fails). Cross-package casts pass a scoped tsc but fail this root tsc the same way CI does.
-2. **When you touch a test helper, run the _full_ integration group** (`pnpm --filter @octostaff/integration-tests test:<group>`), not just the file you opened — helpers are exercised differently by sibling tests. Most groups need Docker (run outside the sandbox).
-3. **Mirror CI's exact command.** Read the relevant `.github/workflows/ci.yml` (the `build-test` job) or `.circleci/config.yml` (integration) and copy the step verbatim — don't substitute a package's own `tsc`/`test` script.
-4. **Don't combine a production fix with debug instrumentation on the same branch.** If the debug code fails to compile, the production fix doesn't ship either.
-
-For a module's integration group specifically: `pnpm --filter @octostaff/<pkg>... -r build`, then `pnpm --filter @octostaff/integration-tests test:<group>`.
-
-## Plan each CI run
-
-Before pressing the button, write down (mentally is fine, in the commit message is
-better):
-
-- What evidence will this run produce?
-- What will I do with each possible outcome?
-
-If the honest answer is "let's see what happens," do more local probing first.
-Server-side diagnostics (`DEBUG=...`, extra logs, timing dumps) are legitimate when
-local genuinely can't reproduce — but enable them deliberately, not as a fishing
-expedition. **A single well-instrumented CI run beats three blind ones.**
-
-## Notes
-
-- **SSH / the `octostaff-bot` key:** now used only by the GitHub Actions **`mirror`** workflow, which loads the `OCTOSTAFF_BOT_SSH_KEY` secret to **push** each package out to its standalone repo (the bot has write access). CI checkouts no longer clone submodules, so neither `ci` (GHA) nor the CircleCI jobs need the key anymore. A mirror push failing with `Repository not found` / permission denied means the key isn't loaded or the bot lost write access.
-- A CircleCI trigger with **no matching `run_*` parameter** creates a pipeline record but zero workflows — that's the gate working, not a bug.
-- CircleCI gate params (`run_ci`, `run_tests`, per-module `run_bubble`/`run_claude_scuba`/`run_codex_scuba`/`run_reef`/`run_starfish`/`run_playwright`/`run_query_cost`) default `false`, so a bare trigger produces zero workflows. `release.sh preflight` consumes `run_ci`/`run_tests` indirectly through this skill — **do not rename them**. `run_query_cost` is deliberately absent from both the `run_ci` and `run_tests` conditions: it profiles rather than gates, so it must never ride along on a release preflight.
-- **Authoring `.circleci/config.yml`:** add `no_output_timeout` only to steps that can hang silently (Vitest, the integration suite, Playwright); lint/format/build stream output and don't need it.
-- After reverting to the single `.circleci/config.yml`, delete any leftover multi-config definitions (`tests`, `checks`, or `release`) deliberately with `circleci.sh delete-definition <name> --yes`.
-- `release` delegates here for integration: `release preflight` runs `circleci.sh tests` (CircleCI integration) alongside `gha.sh await` for the GitHub Actions `ci` run. The npm publish is the GitHub Actions `release` workflow (tag-triggered) — follow it with `gha.sh await --workflow release.yml --ref vX.Y.Z`; that same run also builds the bubble/starfish + bot images to GHCR (`docker-apps`/`docker-amphibian` jobs). Deploying the images to Azure is a separate step (`release` has no `deploy` subcommand).
+1. Identify the exact run, commit, workflow, and failing job.
+2. Read the first causal failure, not only the final cascade.
+3. Reproduce the workflow step locally.
+4. Change the smallest relevant surface and rerun local verification.
+5. Use a single well-instrumented remote run only when it adds evidence local
+   execution cannot provide.

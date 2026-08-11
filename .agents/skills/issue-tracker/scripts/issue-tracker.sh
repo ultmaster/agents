@@ -1,19 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OctoStaff GitHub issue tracker helper.
-#
-# A thin, opinionated wrapper over `gh` that makes the issue tracker the
-# centralized place for tracking OctoStaff work (bug fixes, feature planning,
-# architecture refactors, …): list issues across any of the
-# umbrella / standalone (mirror) repos, read a full issue (title, body, every comment,
-# and its image attachments cached locally so they can be viewed), post progress
-# comments, and tag an issue's status with a label.
-#
-# Style mirrors the `ci` skill's gha.sh: die/log helpers, per-command arg
-# loops, --dry-run to preview, and --yes required for every outward write.
-
-readonly DEFAULT_REPO="umbrella"
+# Portable GitHub issue tracker helper. Repository context is discovered from
+# local git remotes (upstream first) unless the caller passes --repo.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly SKILL_DIR="${SCRIPT_DIR%/scripts}"
@@ -26,38 +15,38 @@ usage() {
 Usage: issue-tracker.sh <command> [options]
 
 Read-only commands:
-  list [options]                List issues (default repo: umbrella).
+  list [options]                List issues in the selected repository.
   view <issue> [options]        Show one issue: body, comments, image attachments.
   labels [--repo R]             List a repo's labels.
-  repos                         Show the repo-alias table.
+  repo [--repo R]               Print the selected repository.
   doctor [--live --yes]         Check this machine can upload issue images.
 
 Write commands (require --yes; --dry-run previews):
-  create --title TEXT [...]      Open a new issue (labels, modules, status, images).
+  create --title TEXT [...]      Open a new issue (labels, areas, status, images).
   comment <issue> [--body TEXT] Post a comment, optionally uploading images.
-  status <issue> --set <name>   Set the issue's status label (and optionally close/reopen).
-  module <issue> --set <names>  Tag which module(s) the issue concerns (additive).
+  status <issue> --set <name>   Set the issue's status label; never change issue state.
+  area <issue> --set <names>    Manage configurable area labels (additive).
 
-Repo selection (any command): --repo <alias|owner/repo>   default: umbrella
-  Aliases: umbrella, reef, claude-scuba, codex-scuba, bubble, starfish,
-           sdk (->sdk-typescript), devkit (->devkit-typescript), octopus,
-           sponge, office, tui. A value containing '/' is used verbatim.
+Repo selection (any command): --repo <owner/repo> (or <host/owner/repo>).
+  Without --repo: prefer the local `upstream` remote, then the current branch's
+  remote, then `origin`, then a single unambiguous remote; otherwise ask gh for
+  the current repo. Discovery refuses ambiguous or non-GitHub remotes.
 
 Common options:
   --dry-run                     Print the gh command(s) without running them.
   --yes                         Confirm a write operation.
 
 Examples:
-  issue-tracker.sh list                                   # open umbrella issues
-  issue-tracker.sh list --repo reef --state all
-  issue-tracker.sh list --label bug --search "scuba"
-  issue-tracker.sh view 8                                 # umbrella issue #8 + images
-  issue-tracker.sh view 12 --repo starfish --dir /tmp/iss
-  issue-tracker.sh create --title "Bug: …" --body-file report.md --module starfish --status triage --yes
-  issue-tracker.sh comment 8 --body "Fixed in abc1234" --yes
-  issue-tracker.sh comment 8 --body-file proof.md --image screenshot.png --yes
-  issue-tracker.sh status 8 --set resolved --close --yes
-  issue-tracker.sh module 8 --set bubble,starfish --yes
+  issue-tracker.sh repo
+  issue-tracker.sh list --state all
+  issue-tracker.sh list --repo owner/project --label bug --search "reconnect"
+  issue-tracker.sh view 8
+  issue-tracker.sh view 12 --repo owner/project --dir /tmp/iss
+  issue-tracker.sh create --title "Bug: …" --body-file report.md --area frontend --status triage --sign "<agent identity>" --yes
+  issue-tracker.sh comment 8 --body "Fixed in owner/project@abc1234" --sign "<agent identity>" --yes
+  issue-tracker.sh comment 8 --body-file proof.md --image screenshot.png --sign "<agent identity>" --yes
+  issue-tracker.sh status 8 --set resolved --yes
+  issue-tracker.sh area 8 --set frontend,api --yes
 USAGE
 }
 
@@ -92,19 +81,31 @@ GHIMAGE
   exit 1
 }
 
+repo_host() {
+  local repo="$1"
+  if [[ "${repo}" == */*/* ]]; then
+    printf '%s' "${repo%%/*}"
+  else
+    printf 'github.com'
+  fi
+}
+
 require_gh_auth() {
+  local repo="$1" host
+  host="$(repo_host "${repo}")"
   require_gh
-  if gh auth status -h github.com >/dev/null 2>&1 && gh api user --jq .login >/dev/null 2>&1; then
+  if gh auth status -h "${host}" >/dev/null 2>&1 \
+    && gh api --hostname "${host}" user --jq .login >/dev/null 2>&1; then
     return 0
   fi
-  cat >&2 <<'AUTH'
-error: gh is not authenticated for github.com.
+  cat >&2 <<AUTH
+error: gh is not authenticated for ${host}.
 
 Configure GitHub CLI auth before using issue-tracker.sh:
-  gh auth login --hostname github.com --scopes repo
+  gh auth login --hostname ${host} --scopes repo
 
-For automation, provide a token in GH_TOKEN (or GITHUB_TOKEN) with `repo` scope
-(read for list/view; write for comment/status) on the octostaff org.
+For automation, provide a token in GH_TOKEN (or GITHUB_TOKEN) with repo scope
+(read for list/view; write for create/comment/status/area) on the target repo.
 AUTH
   exit 1
 }
@@ -123,12 +124,11 @@ require_gh_image_session() {
   # There, pull GH_SESSION_TOKEN from the skill's gitignored .env and retry. We
   # only do this when the env didn't already supply a token, so an explicit
   # exported value is never clobbered by a stale file. See .env.example.
-  local env_file="${SKILL_DIR}/.env"
-  if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "${env_file}"
-    set +a
+  local env_file="${SKILL_DIR}/.env" configured_token=""
+  if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]] \
+    && configured_token="$(read_dotenv_setting GH_SESSION_TOKEN)"; then
+    GH_SESSION_TOKEN="${configured_token}"
+    export GH_SESSION_TOKEN
     if [[ -n "${GH_SESSION_TOKEN:-}" ]] && gh image check-token >/dev/null 2>&1; then
       return 0
     fi
@@ -156,6 +156,11 @@ require_confirmation() {
   ((dry_run)) && return 0
   ((assume_yes)) && return 0
   die "$1 is an outward action; re-run with --yes to confirm (or --dry-run to preview)"
+}
+
+require_issue_number() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] ||
+    die "issue must be a positive numeric issue number, not '$1'"
 }
 
 append_image_separator() {
@@ -227,14 +232,44 @@ apply_images_to_body() {
   fi
 }
 
-# Read a single KEY's value from the skill's .env WITHOUT exporting anything into
-# this process. This keeps GH_SESSION_TOKEN's fallback-only semantics intact
-# (it must not become a global override) while letting other config — e.g.
-# ISSUE_TRACKER_SIGNATURE — live in the same gitignored file.
-read_env_value() {
-  local key="$1" env_file="${SKILL_DIR}/.env"
-  [[ -f "${env_file}" ]] || return 0
-  ( set -a; . "${env_file}" 2>/dev/null || true; printf '%s' "${!key-}" )
+# Read one literal KEY=VALUE setting without evaluating the .env as shell code.
+# The exit status distinguishes an intentionally empty value from an unset one.
+read_dotenv_setting() {
+  local key="$1" env_file="${SKILL_DIR}/.env" line parsed_key value
+  [[ -f "${env_file}" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "${line}" && "${line}" != \#* ]] || continue
+    [[ "${line}" == export\ * ]] && line="${line#export }"
+    [[ "${line}" == *=* ]] || continue
+    parsed_key="${line%%=*}"
+    parsed_key="${parsed_key%"${parsed_key##*[![:space:]]}"}"
+    [[ "${parsed_key}" == "${key}" ]] || continue
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+      value="${value#\"}"
+      value="${value%\"}"
+    elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+      value="${value#\'}"
+      value="${value%\'}"
+    fi
+    printf '%s' "${value}"
+    return 0
+  done < "${env_file}"
+  return 1
+}
+
+config_value() {
+  local key="$1" default_value="$2" value
+  if [[ -v "${key}" ]]; then
+    printf '%s' "${!key}"
+  elif value="$(read_dotenv_setting "${key}")"; then
+    printf '%s' "${value}"
+  else
+    printf '%s' "${default_value}"
+  fi
 }
 
 # Resolve the author signature every comment must carry, in priority order:
@@ -243,7 +278,7 @@ resolve_signature() {
   local override="${1:-}"
   if [[ -n "${override}" ]]; then printf '%s' "${override}"; return 0; fi
   if [[ -n "${ISSUE_TRACKER_SIGNATURE:-}" ]]; then printf '%s' "${ISSUE_TRACKER_SIGNATURE}"; return 0; fi
-  read_env_value ISSUE_TRACKER_SIGNATURE
+  config_value ISSUE_TRACKER_SIGNATURE ""
 }
 
 # Append the attribution footer so every comment states who posted it.
@@ -253,18 +288,100 @@ append_signature() {
   printf '%s\n' "_— posted by ${sig} (via the issue-tracker skill)_" >>"${file}"
 }
 
-# Map a short alias to owner/repo. A value with a slash is treated as owner/repo.
+# Convert a GitHub git URL to gh's OWNER/REPO or HOST/OWNER/REPO form.
+remote_url_to_repo() {
+  local url="$1" host path rest authority owner repo extra
+  if [[ "${url}" == *"://"* ]]; then
+    rest="${url#*://}"
+    rest="${rest#*@}"
+    authority="${rest%%/*}"
+    host="${authority%%:*}"
+    [[ "${rest}" == */* ]] || return 1
+    path="${rest#*/}"
+  elif [[ "${url}" == *:* && "${url%%:*}" != */* ]]; then
+    authority="${url%%:*}"
+    host="${authority##*@}"
+    path="${url#*:}"
+  else
+    return 1
+  fi
+  path="${path%/}"
+  path="${path%.git}"
+  IFS=/ read -r owner repo extra <<<"${path}"
+  [[ -n "${host}" && -n "${owner}" && -n "${repo}" && -z "${extra:-}" ]] || return 1
+  if [[ "${host}" == "github.com" ]]; then
+    printf '%s/%s' "${owner}" "${repo}"
+  else
+    printf '%s/%s/%s' "${host}" "${owner}" "${repo}"
+  fi
+}
+
+normalize_repo_spec() {
+  local value="$1" a b c d
+  if [[ "${value}" == *"://"* || "${value}" == *@*:* ]]; then
+    remote_url_to_repo "${value}" || die "cannot parse --repo as a GitHub repository: ${value}"
+    return 0
+  fi
+  value="${value%/}"
+  value="${value%.git}"
+  IFS=/ read -r a b c d <<<"${value}"
+  if [[ -n "${a}" && -n "${b}" && -z "${c:-}" ]]; then
+    printf '%s/%s' "${a}" "${b}"
+  elif [[ -n "${a}" && -n "${b}" && -n "${c}" && -z "${d:-}" ]]; then
+    printf '%s/%s/%s' "${a}" "${b}" "${c}"
+  else
+    die "--repo must be owner/repo (or host/owner/repo), not '${value}'"
+  fi
+}
+
+# Discover the canonical tracker from local context. An explicit upstream remote
+# always wins, even when the checked-out branch pushes to a personal origin.
 resolve_repo() {
-  local name="${1:-${DEFAULT_REPO}}"
-  case "${name}" in
-    */*) printf '%s' "${name}" ;;
-    sdk) printf 'octostaff/sdk-typescript' ;;
-    devkit) printf 'octostaff/devkit-typescript' ;;
-    umbrella | reef | claude-scuba | codex-scuba | bubble | starfish | octopus | sponge | office | tui)
-      printf 'octostaff/%s' "${name}"
-      ;;
-    *) printf 'octostaff/%s' "${name}" ;; # passthrough for any other octostaff repo
-  esac
+  local explicit="${1:-}" remote="" url="" branch="" branch_remote=""
+  if [[ -n "${explicit}" ]]; then
+    normalize_repo_spec "${explicit}"
+    return 0
+  fi
+
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git config --get remote.upstream.url >/dev/null 2>&1; then
+      remote="upstream"
+    else
+      branch="$(git branch --show-current 2>/dev/null || true)"
+      [[ -n "${branch}" ]] && branch_remote="$(git config --get "branch.${branch}.remote" 2>/dev/null || true)"
+      if [[ -n "${branch_remote}" && "${branch_remote}" != "." ]] \
+        && git config --get "remote.${branch_remote}.url" >/dev/null 2>&1; then
+        remote="${branch_remote}"
+      elif git config --get remote.origin.url >/dev/null 2>&1; then
+        remote="origin"
+      else
+        local -a remotes=()
+        mapfile -t remotes < <(git remote 2>/dev/null)
+        if ((${#remotes[@]} == 1)); then
+          remote="${remotes[0]}"
+        elif ((${#remotes[@]} > 1)); then
+          die "repository has multiple remotes but no upstream, branch remote, or origin; pass --repo owner/repo"
+        fi
+      fi
+    fi
+    if [[ -n "${remote}" ]]; then
+      url="$(git remote get-url "${remote}" 2>/dev/null || true)"
+      [[ -n "${url}" ]] || die "remote '${remote}' has no URL; pass --repo owner/repo"
+      remote_url_to_repo "${url}" \
+        || die "remote '${remote}' is not an unambiguous GitHub repository (${url}); pass --repo owner/repo"
+      return 0
+    fi
+  fi
+
+  if ((dry_run)); then
+    die "dry-run cannot discover a repo via gh without network access; pass --repo owner/repo"
+  fi
+  require_gh
+  local gh_repo=""
+  gh_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  [[ -n "${gh_repo}" ]] \
+    || die "cannot discover a GitHub repository from local context; pass --repo owner/repo"
+  normalize_repo_spec "${gh_repo}"
 }
 
 # Canonical status vocabulary -> label color (hex, no #).
@@ -292,15 +409,33 @@ is_status_name() {
   esac
 }
 
-# Module/area labels — which part of the system an issue concerns. Unlike status
-# these are additive (an issue may span several). The package set plus a few
-# cross-cutting areas; any other name is accepted too. All share one color so
-# they still cluster visually despite being prefix-free.
-readonly MODULE_NAMES="bubble claude-scuba codex-scuba reef starfish sdk devkit octopus sponge office tui ci deploy docs infra"
-readonly MODULE_COLOR="bfdadc"
-is_module_name() {
-  case " ${MODULE_NAMES} " in
-    *" $1 "*) return 0 ;;
+# Areas are generic and configurable. Prefixing makes --set safe because the
+# helper can distinguish its labels from unrelated repository labels. Set an
+# empty prefix plus ISSUE_TRACKER_AREA_LABELS for repositories using bare labels.
+area_prefix() { config_value ISSUE_TRACKER_AREA_PREFIX "area:"; }
+area_color() { config_value ISSUE_TRACKER_AREA_COLOR "bfdadc"; }
+area_names() { config_value ISSUE_TRACKER_AREA_LABELS ""; }
+
+format_area_label() {
+  local name="$1" prefix
+  prefix="$(area_prefix)"
+  if [[ -n "${prefix}" && "${name}" == "${prefix}"* ]]; then
+    printf '%s' "${name}"
+  else
+    printf '%s%s' "${prefix}" "${name}"
+  fi
+}
+
+is_area_label() {
+  local label="$1" prefix names
+  prefix="$(area_prefix)"
+  if [[ -n "${prefix}" ]]; then
+    [[ "${label}" == "${prefix}"* ]]
+    return
+  fi
+  names="$(area_names)"
+  case " ${names//,/ } " in
+    *" ${label} "*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -310,30 +445,23 @@ split_list() {
   printf '%s' "$1" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d'
 }
 
-cmd_repos() {
-  cat <<'REPOS'
-Alias          Repository
------          ----------
-umbrella *     octostaff/umbrella
-reef           octostaff/reef
-claude-scuba   octostaff/claude-scuba
-codex-scuba    octostaff/codex-scuba
-bubble         octostaff/bubble
-starfish       octostaff/starfish
-sdk            octostaff/sdk-typescript
-devkit         octostaff/devkit-typescript
-octopus        octostaff/octopus
-sponge         octostaff/sponge
-office         octostaff/office
-tui            octostaff/tui
-(* default)    any other value is passed through as octostaff/<value>; a value
-               containing '/' is used verbatim as owner/repo.
-REPOS
+cmd_repo() {
+  local repo_in=""
+  while (($#)); do
+    case "$1" in
+      --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
+      -h | --help) echo "Usage: issue-tracker.sh repo [--repo owner/repo]"; return 0 ;;
+      *) die "Unknown repo option: $1" ;;
+    esac
+    shift
+  done
+  resolve_repo "${repo_in}"
+  printf '\n'
 }
 
 cmd_list() {
   dry_run=0
-  local repo_in="${DEFAULT_REPO}" state="open" limit=30
+  local repo_in="" state="open" limit=30
   local -a passthru=()
   while (($#)); do
     case "$1" in
@@ -366,13 +494,13 @@ cmd_list() {
     printf '\n'
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
   gh issue list -R "${repo}" --state "${state}" --limit "${limit}" "${passthru[@]}"
 }
 
 cmd_labels() {
   dry_run=0
-  local repo_in="${DEFAULT_REPO}"
+  local repo_in=""
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
@@ -387,7 +515,7 @@ cmd_labels() {
     printf '+ gh label list -R %q --limit 100\n' "${repo}"
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
   gh label list -R "${repo}" --limit 100
 }
 
@@ -396,6 +524,21 @@ extract_image_urls() {
   grep -oE "https?://[^][:space:]\")(<>']+" 2>/dev/null \
     | grep -iE 'user-attachments/assets/|user-images\.githubusercontent\.com|\.(png|jpe?g|gif|webp|bmp|svg)([?#]|$)' \
     | awk '!seen[$0]++' || true
+}
+
+# Only the selected GitHub host's attachment endpoint may receive the gh token.
+# Arbitrary image URLs in issue prose are untrusted and must be fetched without
+# credentials. Userinfo is refused so github.com@attacker.example cannot pass.
+is_trusted_repo_attachment_url() {
+  local url="$1" expected_host="$2" rest authority host path
+  [[ "${url}" == https://* ]] || return 1
+  rest="${url#https://}"
+  authority="${rest%%/*}"
+  [[ "${authority}" != *@* ]] || return 1
+  host="${authority%%:*}"
+  path="${rest#*/}"
+  [[ "${host,,}" == "${expected_host,,}" ]] || return 1
+  [[ "${path}" == user-attachments/assets/* ]]
 }
 
 mime_to_ext() {
@@ -412,7 +555,7 @@ mime_to_ext() {
 
 cmd_view() {
   dry_run=0
-  local repo_in="${DEFAULT_REPO}" num="" dir="" no_images=0
+  local repo_in="" num="" dir="" no_images=0
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
@@ -421,7 +564,7 @@ cmd_view() {
       --dry-run) dry_run=1 ;;
       -h | --help)
         echo "Usage: issue-tracker.sh view <issue> [--repo R] [--dir DIR] [--no-images]"
-        echo "  Caches issue.json + issue.md + images under cache/<issue> (gitignored) by default."
+        echo "  Caches issue.json + issue.md + images under cache/<repo>/<issue> by default."
         return 0 ;;
       -*) die "Unknown view option: $1" ;;
       *) [[ -z "${num}" ]] || die "view takes a single issue number"; num="$1" ;;
@@ -429,15 +572,18 @@ cmd_view() {
     shift
   done
   [[ -n "${num}" ]] || die "view requires an issue number"
+  require_issue_number "${num}"
   local repo; repo="$(resolve_repo "${repo_in}")"
   if ((dry_run)); then
     printf '+ gh issue view %q -R %q --json number,title,state,labels,author,assignees,milestone,createdAt,updatedAt,url,body,comments\n' "${num}" "${repo}"
-    printf '+ cache -> %q\n' "${dir:-${CACHE_BASE}/${num}}"
+    local cache_key="${repo//\//__}"
+    printf '+ cache -> %q\n' "${dir:-${CACHE_BASE}/${cache_key}/${num}}"
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
 
-  [[ -n "${dir}" ]] || dir="${CACHE_BASE}/${num}"
+  local cache_key="${repo//\//__}"
+  [[ -n "${dir}" ]] || dir="${CACHE_BASE}/${cache_key}/${num}"
   mkdir -p "${dir}"
 
   local json
@@ -480,7 +626,7 @@ cmd_view() {
   fi
 
   local token=""
-  token="$(gh auth token 2>/dev/null || true)"
+  token="$(gh auth token --hostname "$(repo_host "${repo}")" 2>/dev/null || true)"
 
   printf '\n──────── attachments ────────\n'
   local i=0 url out ext mime
@@ -488,10 +634,12 @@ cmd_view() {
     [[ -n "${url}" ]] || continue
     i=$((i + 1))
     out="$(printf '%s/issue-%s-%02d' "${dir}" "${num}" "${i}")"
-    # Authenticated fetch; curl drops the auth header on cross-host redirect
-    # (the signed CDN URL), which is exactly what GitHub's attachment host wants.
-    if [[ -n "${token}" ]]; then
-      curl -fsSL -H "Authorization: token ${token}" -o "${out}" "${url}" 2>/dev/null \
+    # Authenticate only the exact GitHub attachment endpoint. Feed the header
+    # over stdin so the token never appears in curl's process arguments. curl
+    # drops it if GitHub redirects to a different signed CDN host.
+    if [[ -n "${token}" ]] && is_trusted_repo_attachment_url "${url}" "$(repo_host "${repo}")"; then
+      printf 'Authorization: token %s\n' "${token}" \
+        | curl -fsSL --header @- -o "${out}" "${url}" 2>/dev/null \
         || curl -fsSL -o "${out}" "${url}" 2>/dev/null || { printf '  ! failed: %s\n' "${url}"; continue; }
     else
       curl -fsSL -o "${out}" "${url}" 2>/dev/null || { printf '  ! failed: %s\n' "${url}"; continue; }
@@ -508,7 +656,7 @@ cmd_view() {
 cmd_comment() {
   dry_run=0
   assume_yes=0
-  local repo_in="${DEFAULT_REPO}" num="" body="" body_file="" sign_override=""
+  local repo_in="" num="" body="" body_file="" sign_override=""
   local -a image_paths=()
   local image_count=0
   while (($#)); do
@@ -534,7 +682,7 @@ Usage: issue-tracker.sh comment <issue> [--body TEXT | --body-file FILE] [--imag
   it up.
 
   Every comment is signed with who posted it. Provide the signature with
-  --sign "Claude Code Opus 4.8" (or "Codex", …), or set ISSUE_TRACKER_SIGNATURE
+  --sign "<agent identity>", or set ISSUE_TRACKER_SIGNATURE
   in the environment / the skill's .env (see .env.example).
 USAGE
         return 0 ;;
@@ -544,6 +692,7 @@ USAGE
     shift
   done
   [[ -n "${num}" ]] || die "comment requires an issue number"
+  require_issue_number "${num}"
   [[ -n "${body}" || -n "${body_file}" || ${image_count} -gt 0 ]] || die "comment requires --body, --body-file, or --image"
   [[ -z "${body}" || -z "${body_file}" ]] || die "use only one of --body / --body-file"
   local repo; repo="$(resolve_repo "${repo_in}")"
@@ -565,7 +714,7 @@ USAGE
   # surfaces (and previews) a missing signature.
   local signature; signature="$(resolve_signature "${sign_override}")"
   [[ -n "${signature}" ]] || die "comment requires a signature identifying who is posting. Provide it via:
-  --sign \"Claude Code Opus 4.8\"                       (per call; also \"Codex\", etc.)
+  --sign \"<agent identity>\"                           (per call)
   export ISSUE_TRACKER_SIGNATURE=\"...\"                 (per shell)
   set ISSUE_TRACKER_SIGNATURE in ${SKILL_DIR}/.env   (persistent; see .env.example)"
 
@@ -583,7 +732,7 @@ USAGE
     printf '+ gh issue comment %q -R %q --body-file <generated>\n' "${num}" "${repo}"
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
 
   # Upload images first (if any) so a failed upload aborts before we post.
   local uploaded_markdown=""
@@ -611,6 +760,7 @@ USAGE
   fi
   append_signature "${tmp_body}" "${signature}"
 
+  log "Commenting on ${repo}#${num}"
   gh issue comment "${num}" -R "${repo}" --body-file "${tmp_body}" \
     || { local rc=$?; rm -f "${tmp_body}"; return "${rc}"; }
   rm -f "${tmp_body}"
@@ -619,22 +769,22 @@ USAGE
 cmd_status() {
   dry_run=0
   assume_yes=0
-  local repo_in="${DEFAULT_REPO}" num="" set_status="" do_close=0 do_reopen=0
+  local repo_in="" num="" set_status=""
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
       --set) shift; (($#)) || die "--set requires a value"; set_status="$1" ;;
-      --close) do_close=1 ;;
-      --reopen) do_reopen=1 ;;
+      --close | --reopen) die "agents do not close or reopen issues; set a status label and leave state changes to a human" ;;
       --yes) assume_yes=1 ;;
       --dry-run) dry_run=1 ;;
       -h | --help)
         cat <<'USAGE'
-Usage: issue-tracker.sh status <issue> --set <name> [--repo R] [--close] [--reopen] --yes
+Usage: issue-tracker.sh status <issue> --set <name> [--repo R] --yes
   Sets a single status label (replacing any existing canonical status label),
   creating the label if missing. Canonical names:
     triage investigating in-progress blocked needs-info resolved wontfix duplicate
-  (any other name is accepted too). --close/--reopen also change issue state.
+  Issue state is deliberately not changed; agents mark resolved and leave
+  closing/reopening to a human.
 USAGE
         return 0 ;;
       -*) die "Unknown status option: $1" ;;
@@ -643,10 +793,12 @@ USAGE
     shift
   done
   [[ -n "${num}" ]] || die "status requires an issue number"
+  require_issue_number "${num}"
   [[ -n "${set_status}" ]] || die "status requires --set <name>"
-  ((do_close && do_reopen)) && die "--close and --reopen are mutually exclusive"
   # Tolerate a leading status: if the user typed it; the label itself is bare.
   set_status="${set_status#status:}"
+  is_status_name "${set_status}" ||
+    die "unknown status '${set_status}'; use one of: ${STATUS_NAMES}"
   local repo; repo="$(resolve_repo "${repo_in}")"
   local new_label="${set_status}"
   local color; color="$(status_color "${set_status}")"
@@ -656,11 +808,9 @@ USAGE
     printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${new_label}" "${repo}" "${color}"
     printf '+ remove any other canonical status label, then\n'
     printf '+ gh issue edit %q -R %q --add-label %q\n' "${num}" "${repo}" "${new_label}"
-    ((do_close)) && printf '+ gh issue close %q -R %q\n' "${num}" "${repo}"
-    ((do_reopen)) && printf '+ gh issue reopen %q -R %q\n' "${num}" "${repo}"
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
 
   # Create the label only if absent (no --force, so existing label colors and
   # descriptions are left untouched).
@@ -680,15 +830,13 @@ USAGE
 
   log "Setting ${repo}#${num} -> ${new_label}"
   gh issue edit "${num}" -R "${repo}" --add-label "${new_label}" "${remove[@]}"
-  ((do_close)) && gh issue close "${num}" -R "${repo}"
-  ((do_reopen)) && gh issue reopen "${num}" -R "${repo}"
   return 0
 }
 
-cmd_module() {
+cmd_area() {
   dry_run=0
   assume_yes=0
-  local repo_in="${DEFAULT_REPO}" num="" set_list="" add_list="" remove_list=""
+  local repo_in="" num="" set_list="" add_list="" remove_list=""
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
@@ -699,70 +847,77 @@ cmd_module() {
       --dry-run) dry_run=1 ;;
       -h | --help)
         cat <<'USAGE'
-Usage: issue-tracker.sh module <issue> (--set <m,...> | --add <m,...> | --remove <m,...>) [--repo R] --yes
-  Tag which module(s) an issue concerns (additive — an issue may span several).
-  --set replaces the whole module set (drops other canonical module labels);
-  --add / --remove adjust incrementally. Values are comma/space lists, repeatable.
-  Canonical modules:
-    bubble claude-scuba codex-scuba reef starfish sdk devkit octopus sponge
-    office tui ci deploy docs infra
-  (any other name is accepted too).
+Usage: issue-tracker.sh area <issue> (--set <a,...> | --add <a,...> | --remove <a,...>) [--repo R] --yes
+  Manage additive area labels. Values are comma/space lists and flags repeat.
+  By default names become area:<name>. Configure ISSUE_TRACKER_AREA_PREFIX,
+  ISSUE_TRACKER_AREA_COLOR, and ISSUE_TRACKER_AREA_LABELS in .env.
 USAGE
         return 0 ;;
-      -*) die "Unknown module option: $1" ;;
-      *) [[ -z "${num}" ]] || die "module takes a single issue number"; num="$1" ;;
+      -*) die "Unknown area option: $1" ;;
+      *) [[ -z "${num}" ]] || die "area takes a single issue number"; num="$1" ;;
     esac
     shift
   done
-  [[ -n "${num}" ]] || die "module requires an issue number"
+  [[ -n "${num}" ]] || die "area requires an issue number"
+  require_issue_number "${num}"
   if [[ -n "${set_list}" && ( -n "${add_list}" || -n "${remove_list}" ) ]]; then
     die "--set is exclusive with --add/--remove"
   fi
-  [[ -n "${set_list}${add_list}${remove_list}" ]] || die "module requires --set, --add, or --remove"
+  [[ -n "${set_list}${add_list}${remove_list}" ]] || die "area requires --set, --add, or --remove"
   local repo; repo="$(resolve_repo "${repo_in}")"
+
+  if [[ -n "${set_list}" && -z "$(area_prefix)" && -z "$(area_names)" ]]; then
+    die "area --set with a blank prefix requires ISSUE_TRACKER_AREA_LABELS so existing area labels can be identified safely"
+  fi
 
   # Build the explicit add and remove sets.
   local -a add=() remove=()
-  local m
-  while IFS= read -r m || [[ -n "${m}" ]]; do [[ -n "${m}" ]] && add+=("${m}"); done < <(split_list "${set_list}${add_list}")
-  while IFS= read -r m || [[ -n "${m}" ]]; do [[ -n "${m}" ]] && remove+=("${m}"); done < <(split_list "${remove_list}")
+  local name label
+  while IFS= read -r name || [[ -n "${name}" ]]; do
+    [[ -n "${name}" ]] && add+=("$(format_area_label "${name}")")
+  done < <(split_list "${set_list}${add_list}")
+  while IFS= read -r name || [[ -n "${name}" ]]; do
+    [[ -n "${name}" ]] && remove+=("$(format_area_label "${name}")")
+  done < <(split_list "${remove_list}")
 
-  # For --set, also drop any other canonical module label currently on the issue.
+  require_confirmation "area"
+
+  # For --set, also drop any other configured/prefixed area label.
   if [[ -n "${set_list}" && ${dry_run} -eq 0 ]]; then
+    require_gh_auth "${repo}"
     local current
     current="$(gh issue view "${num}" -R "${repo}" --json labels --jq '.labels[].name' 2>/dev/null || true)"
     local lbl keep
     while IFS= read -r lbl; do
       [[ -n "${lbl}" ]] || continue
-      is_module_name "${lbl}" || continue
+      is_area_label "${lbl}" || continue
       keep=0
-      for m in "${add[@]}"; do [[ "${lbl}" == "${m}" ]] && keep=1 && break; done
+      for label in "${add[@]}"; do [[ "${lbl}" == "${label}" ]] && keep=1 && break; done
       ((keep)) || remove+=("${lbl}")
     done <<<"${current}"
   fi
 
-  require_confirmation "module"
   if ((dry_run)); then
-    for m in "${add[@]}"; do printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${m}" "${repo}" "${MODULE_COLOR}"; done
-    [[ -n "${set_list}" ]] && printf '+ (--set) also remove other canonical module labels on the issue\n'
+    for label in "${add[@]}"; do printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${label}" "${repo}" "$(area_color)"; done
+    [[ -n "${set_list}" ]] && printf '+ (--set) also remove other configured/prefixed area labels on the issue\n'
     printf '+ gh issue edit %q -R %q' "${num}" "${repo}"
-    for m in "${add[@]}"; do printf ' --add-label %q' "${m}"; done
-    for m in "${remove[@]}"; do printf ' --remove-label %q' "${m}"; done
+    for label in "${add[@]}"; do printf ' --add-label %q' "${label}"; done
+    for label in "${remove[@]}"; do printf ' --remove-label %q' "${label}"; done
     printf '\n'
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
 
   # Create each added label if absent (existing labels keep their color/desc).
-  for m in "${add[@]}"; do
-    gh label create "${m}" -R "${repo}" -c "${MODULE_COLOR}" -d "Module: ${m}" >/dev/null 2>&1 || true
+  for label in "${add[@]}"; do
+    gh label create "${label}" -R "${repo}" -c "$(area_color)" -d "Area: ${label}" >/dev/null 2>&1 || true
   done
 
   local -a edit_args=()
-  for m in "${add[@]}"; do edit_args+=(--add-label "${m}"); done
-  for m in "${remove[@]}"; do edit_args+=(--remove-label "${m}"); done
+  for label in "${add[@]}"; do edit_args+=(--add-label "${label}"); done
+  for label in "${remove[@]}"; do edit_args+=(--remove-label "${label}"); done
   ((${#edit_args[@]})) || { log "nothing to change"; return 0; }
-  log "Tagging modules on ${repo}#${num}"
+  log "Tagging areas on ${repo}#${num}"
   gh issue edit "${num}" -R "${repo}" "${edit_args[@]}"
   return 0
 }
@@ -770,8 +925,8 @@ USAGE
 cmd_create() {
   dry_run=0
   assume_yes=0
-  local repo_in="${DEFAULT_REPO}" title="" body="" body_file="" sign_override=""
-  local status_name="" module_list="" milestone=""
+  local repo_in="" title="" body="" body_file="" sign_override=""
+  local status_name="" area_list="" milestone=""
   local -a image_paths=() plain_labels=() assignees=()
   while (($#)); do
     case "$1" in
@@ -781,7 +936,7 @@ cmd_create() {
       --body-file | -F) shift; (($#)) || die "--body-file requires a value"; body_file="$1" ;;
       --image | --attach) shift; (($#)) || die "--image requires a file path"; image_paths+=("$1") ;;
       --label | -l) shift; (($#)) || die "--label requires a value"; plain_labels+=("$1") ;;
-      --module | -m) shift; (($#)) || die "--module requires a value"; module_list+=" $1" ;;
+      --area | --module | -m) shift; (($#)) || die "--area requires a value"; area_list+=" $1" ;;
       --status | -s) shift; (($#)) || die "--status requires a value"; status_name="$1" ;;
       --assignee | -a) shift; (($#)) || die "--assignee requires a value"; assignees+=("$1") ;;
       --milestone) shift; (($#)) || die "--milestone requires a value"; milestone="$1" ;;
@@ -791,18 +946,17 @@ cmd_create() {
       -h | --help)
         cat <<'USAGE'
 Usage: issue-tracker.sh create --title TEXT [--body TEXT | --body-file FILE]
-         [--image FILE ...] [--label L ...] [--module m,...] [--status NAME]
+         [--image FILE ...] [--label L ...] [--area a,...] [--status NAME]
          [--assignee U ...] [--milestone M] [--sign WHO] [--repo R] --yes
 
-  Open a new issue. --module / --status tag it with the canonical module and
-  status labels (created if missing, same vocabulary as the module/status
-  commands); --label attaches arbitrary labels (also created if missing).
+  Open a new issue. --area / --status attach managed area and status labels;
+  --label attaches arbitrary labels. Missing labels are created.
   Repeat --image to upload screenshots with gh-image. An image referenced in
   the body by the path you pass to --image (or its basename) is rewritten to
   the uploaded URL in place; any --image not referenced inline is appended.
 
   Like comment, the body is signed with who filed it. Provide the signature
-  with --sign "Claude Code Opus 4.8", or set ISSUE_TRACKER_SIGNATURE in the
+  with --sign "<agent identity>", or set ISSUE_TRACKER_SIGNATURE in the
   environment / the skill's .env (see .env.example).
 USAGE
         return 0 ;;
@@ -825,6 +979,10 @@ USAGE
   fi
   # Tolerate a leading status: if the user typed it; the label itself is bare.
   status_name="${status_name#status:}"
+  if [[ -n "${status_name}" ]]; then
+    is_status_name "${status_name}" ||
+      die "unknown status '${status_name}'; use one of: ${STATUS_NAMES}"
+  fi
 
   require_confirmation "create"
 
@@ -832,17 +990,16 @@ USAGE
   # attributable. Resolve up front so a dry-run also catches a missing one.
   local signature; signature="$(resolve_signature "${sign_override}")"
   [[ -n "${signature}" ]] || die "create requires a signature identifying who is filing the issue. Provide it via:
-  --sign \"Claude Code Opus 4.8\"                       (per call; also \"Codex\", etc.)
+  --sign \"<agent identity>\"                           (per call)
   export ISSUE_TRACKER_SIGNATURE=\"...\"                 (per shell)
   set ISSUE_TRACKER_SIGNATURE in ${SKILL_DIR}/.env   (persistent; see .env.example)"
 
-  # Expand the module list and assemble the full set of labels to attach. The
-  # creation pass below colors each by kind (module / status / bare label).
-  local -a modules=() attach_labels=()
+  # Expand areas and assemble the full label set.
+  local -a areas=() attach_labels=()
   local m l
-  while IFS= read -r m || [[ -n "${m}" ]]; do [[ -n "${m}" ]] && modules+=("${m}"); done < <(split_list "${module_list}")
+  while IFS= read -r m || [[ -n "${m}" ]]; do [[ -n "${m}" ]] && areas+=("$(format_area_label "${m}")"); done < <(split_list "${area_list}")
   for l in "${plain_labels[@]}"; do attach_labels+=("${l}"); done
-  for m in "${modules[@]}"; do attach_labels+=("${m}"); done
+  for m in "${areas[@]}"; do attach_labels+=("${m}"); done
   [[ -n "${status_name}" ]] && attach_labels+=("${status_name}")
 
   if ((dry_run)); then
@@ -852,7 +1009,7 @@ USAGE
       printf '\n'
     fi
     for l in "${plain_labels[@]}"; do printf '+ gh label create %q -R %q -c ededed  (if missing)\n' "${l}" "${repo}"; done
-    for m in "${modules[@]}"; do printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${m}" "${repo}" "${MODULE_COLOR}"; done
+    for m in "${areas[@]}"; do printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${m}" "${repo}" "$(area_color)"; done
     [[ -n "${status_name}" ]] && printf '+ gh label create %q -R %q -c %q  (if missing)\n' "${status_name}" "${repo}" "$(status_color "${status_name}")"
     printf '+ compose issue body'
     [[ -n "${body}" ]] && printf ' from --body'
@@ -867,7 +1024,7 @@ USAGE
     printf '\n'
     return 0
   fi
-  require_gh_auth
+  require_gh_auth "${repo}"
 
   # Upload images first (if any) so a failed upload aborts before we create.
   local uploaded_markdown=""
@@ -896,12 +1053,12 @@ USAGE
   append_signature "${tmp_body}" "${signature}"
 
   # Create any labels that may not exist yet (no --force; existing labels keep
-  # their color/description). Mirrors status/module label creation.
+  # their color/description). Mirrors status/area label creation.
   for l in "${plain_labels[@]}"; do
     gh label create "${l}" -R "${repo}" -c "ededed" >/dev/null 2>&1 || true
   done
-  for m in "${modules[@]}"; do
-    gh label create "${m}" -R "${repo}" -c "${MODULE_COLOR}" -d "Module: ${m}" >/dev/null 2>&1 || true
+  for m in "${areas[@]}"; do
+    gh label create "${m}" -R "${repo}" -c "$(area_color)" -d "Area: ${m}" >/dev/null 2>&1 || true
   done
   if [[ -n "${status_name}" ]]; then
     gh label create "${status_name}" -R "${repo}" -c "$(status_color "${status_name}")" -d "Status: ${status_name}" >/dev/null 2>&1 || true
@@ -920,7 +1077,7 @@ USAGE
 }
 
 cmd_doctor() {
-  local repo_in="${DEFAULT_REPO}" do_live=0 live_yes=0
+  local repo_in="" do_live=0 live_yes=0
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
@@ -944,17 +1101,19 @@ DOC
     esac
     shift
   done
-  local repo; repo="$(resolve_repo "${repo_in}")"
+  local repo host
+  repo="$(resolve_repo "${repo_in}")"
+  host="$(repo_host "${repo}")"
 
   local fails=0
   log "checking image-upload setup…"
 
-  # 1. gh CLI present + authenticated for github.com.
+  # 1. gh CLI present + authenticated for the selected host.
   local login=""
-  if login="$(gh api user --jq .login 2>/dev/null)" && [[ -n "${login}" ]]; then
+  if login="$(gh api --hostname "${host}" user --jq .login 2>/dev/null)" && [[ -n "${login}" ]]; then
     printf '  ok    gh authenticated (user: %s)\n' "${login}"
   else
-    printf '  FAIL  gh not authenticated for github.com — run: gh auth login -h github.com\n'
+    printf '  FAIL  gh not authenticated for %s — run: gh auth login -h %s\n' "${host}" "${host}"
     fails=$((fails + 1))
   fi
 
@@ -980,12 +1139,11 @@ DOC
       printf '  ok    web session token valid via %s (user: %s)\n' "${via}" "${user}"
       token_ok=1
     else
-      local env_file="${SKILL_DIR}/.env"
-      if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]]; then
-        set -a
-        # shellcheck disable=SC1090
-        . "${env_file}"
-        set +a
+      local env_file="${SKILL_DIR}/.env" configured_token=""
+      if [[ -z "${GH_SESSION_TOKEN:-}" && -f "${env_file}" ]] \
+        && configured_token="$(read_dotenv_setting GH_SESSION_TOKEN)"; then
+        GH_SESSION_TOKEN="${configured_token}"
+        export GH_SESSION_TOKEN
         if [[ -n "${GH_SESSION_TOKEN:-}" ]] && user="$(gh image check-token 2>/dev/null)" && [[ -n "${user}" ]]; then
           printf '  ok    web session token valid via .env fallback (user: %s)\n' "${user}"
           token_ok=1
@@ -1040,9 +1198,9 @@ main() {
     create | new) cmd_create "$@" ;;
     comment) cmd_comment "$@" ;;
     status) cmd_status "$@" ;;
-    module) cmd_module "$@" ;;
+    area | module) cmd_area "$@" ;;
     labels) cmd_labels "$@" ;;
-    repos) cmd_repos "$@" ;;
+    repo | repos) cmd_repo "$@" ;;
     doctor) cmd_doctor "$@" ;;
     help | -h | --help) usage ;;
     *) die "unknown command '${cmd}' (try: issue-tracker.sh help)" ;;

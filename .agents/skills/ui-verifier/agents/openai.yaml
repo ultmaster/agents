@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Verifier"
+  short_description: "Verify running UI without harming user work"
+  default_prompt: "Use $ui-verifier to verify this change in the running interface and capture proof."

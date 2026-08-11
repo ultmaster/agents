@@ -1,104 +1,70 @@
 ---
 name: ai-comment
-description: Use when finding and resolving AI marker comments left in the codebase — AI-FIX:, AI-REFACTOR:, AI-VERIFY:, AI-QUESTION:, or any AI-<UPPER>: annotation. Trigger whenever the user asks to resolve, address, action, clean up, sweep, or work through the AI comments / markers / annotations they (or a previous agent) left in the code, or names any AI-FIX / AI-REFACTOR / AI-VERIFY / AI-QUESTION tag — even a terse "handle the markers" or pointing at a file full of them. Each marker type carries a distinct intent and earns a distinct response; the run is triage-first so you steer before edits land.
+description: >-
+  Find, triage, and resolve typed AI marker comments such as AI-FIX:,
+  AI-REFACTOR:, AI-VERIFY:, AI-QUESTION:, and other typed AI annotations.
+  Use when a user asks to handle, sweep, clean up, or act on AI comments or
+  names one of these markers. Interpret each marker by type, confirm ambiguous
+  or human-owned decisions before editing, and remove a marker only after its
+  intent is satisfied.
 ---
 
 # AI Comment Markers
 
-AI marker comments are short, typed notes left in the code for a later agent (or
-human) to act on. **The type is the instruction.** The single biggest mistake is
-flattening every marker into one "read it, change the code, delete the marker"
-loop — that answers open questions by guessing, and "fixes" code that was only
-asking to be double-checked. Read the type first; it tells you what response is
-even appropriate.
+Treat the marker type as part of the instruction. Do not flatten every marker
+into “change nearby code and delete the comment.”
 
-## Marker vocabulary
-
-| Marker | What the author meant | Your response | Usual outcome |
-| --- | --- | --- | --- |
-| `AI-FIX:` | A known defect or a concrete required change. | Implement the fix at its proper home in the code. | code change → marker removed |
-| `AI-REFACTOR:` | Improve structure/clarity; **behavior must not change.** | Restructure, then confirm behavior is preserved (tests stay green, no semantic drift). | code change → marker removed |
-| `AI-VERIFY:` | "I'm not sure this is correct — check it." | **Investigate, don't assume an edit.** Confirm the behavior/claim; only change code if it's genuinely wrong. | often **no** code change — confirm, remove marker, report the finding; or, if you find a real bug you can't safely fix now, rewrite it as an `AI-FIX:` |
-| `AI-QUESTION:` | An open question addressed to a **human**. | Answer it and surface it to the user. Don't silently pick an answer, edit code, and delete the question. | needs human sign-off before the marker comes out |
-| `AI-<OTHER>:` | Any other `AI-<UPPER>:` tag (e.g. `AI-TODO:`, `AI-NOTE:`). | Infer intent from the verb; act by best judgment. When the intent isn't clear, treat it like a question and triage it to the user. | depends |
-
-The four named markers are the core vocabulary; the extensible row exists so a
-stray `AI-TODO:` doesn't get ignored — not as license to invent new tag types.
+| Marker | Intent | Response |
+| --- | --- | --- |
+| `AI-FIX:` | A known defect or concrete required change | Fix the behavior at its proper owner, verify it, then remove the marker. |
+| `AI-REFACTOR:` | Improve structure without changing behavior | Restructure, prove behavior stayed stable, then remove the marker. |
+| `AI-VERIFY:` | Check an uncertain claim or implementation | Investigate first. Often the result is a finding, not a code change. |
+| `AI-QUESTION:` | A decision or question for a human | Surface it and wait for an answer; do not silently choose one. |
+| `AI-<OTHER>:` | An extension such as `AI-TODO:` or `AI-NOTE:` | Infer the verb conservatively; treat unclear intent like a question. |
 
 ## Workflow
 
-Run these in order. Steps 1–3 are cheap and keep you from editing blind.
+1. Run the bundled scanner from the repository root, honoring any path or diff
+   scope the user supplied:
 
-### 1. Scan
+   ```bash
+   bash .agents/skills/ai-comment/scripts/scan.sh
+   bash .agents/skills/ai-comment/scripts/scan.sh src tests
+   ```
 
-Run the bundled scanner from the repo root:
+   If the project links this skill elsewhere, invoke the scanner through that
+   path. For a diff-only scan, pass the changed files as arguments and exclude
+   deleted paths.
 
-```bash
-bash .agents/skills/ai-comment/scripts/scan.sh              # whole tree
-bash .agents/skills/ai-comment/scripts/scan.sh packages/bubble   # scoped to a path
-bash .agents/skills/ai-comment/scripts/scan.sh $(git diff --name-only)  # just your diff
-```
+2. Read each hit in context, including relevant callers and tests. A marker can
+   sit at a symptom while the correct change belongs to a lower-level owner.
 
-Honor whatever scope the user implied — a package, a path, "the ones I just
-added." If they gave none, default to the whole tree, but if that turns up a
-large pile, confirm the scope and a sensible order (package by package) before
-sweeping.
+3. Present a compact inventory before editing:
 
-The scanner excludes `node_modules`, `dist`, the lockfile, and **this skill's own
-directory** — SKILL.md documents the marker strings, so without that exclusion
-every run would flag itself. Two related judgment calls the scanner can't make
-for you: matches inside docs/markdown that are *explaining the convention* (like
-this file) are examples, not work items; and a match without a real ask attached
-is prose, not a marker.
+   ```text
+   type | file:line | ask | proposed action | actionable / needs input / leave
+   ```
 
-### 2. Classify & read context
+   Confirm every question, ambiguous marker, and unexpectedly broad change with
+   the user. If the user already selected exact actionable markers and their
+   intent is clear, that selection is the confirmation.
 
-Group the hits by type. For each, read the surrounding code **and** the relevant
-call sites — the marker lives at the symptom, but the fix often belongs with the
-callee that owns the behavior. Enough context to know what the author was
-actually asking, and where the change truly belongs, before proposing anything.
+4. Resolve the confirmed items under the repository's local instructions. A
+   marker never overrides project architecture, test policy, or review rules.
 
-### 3. Triage → confirm
+5. Run the relevant project checks and re-run the scanner over the edited scope.
 
-Present an inventory and get direction before edits land. One row per marker:
+6. Report outcomes separately:
 
-```
-type | file:line | the ask (one line) | proposed action | actionable / needs-input / leave
-```
+   ```text
+   Resolved  — marker and location → change
+   Verified  — marker and location → finding; no code change
+   Left open — marker and location → blocker or needed decision
+   ```
 
-Get a go-ahead before you start editing — and explicitly route every
-`AI-QUESTION:`, anything ambiguous, and anything wide-scope to the user. This is
-the checkpoint that makes an autonomous sweep safe.
+## Removal rule
 
-### 4. Resolve — per type
-
-Work the confirmed items following the marker semantics above, holding to the
-repo's usual coding standards (`AGENTS.md` / `CLAUDE.md`). Nothing about a marker
-overrides how you'd normally make the change — the type only tells you *what kind*
-of response it wants.
-
-### 5. Verify
-
-Verify your edits the way any change in this repo is verified (`AGENTS.md` / `CLAUDE.md`),
-scoped to the packages you touched. The one check unique to this skill: **re-run
-the scanner** afterward, to confirm the markers you resolved are gone and no
-strays slipped in.
-
-### 6. Report
-
-Close with a short account, split three ways:
-
-```
-Resolved      — <marker> @ file:line → what changed
-Verified      — <marker> @ file:line → finding (no code change needed)
-Left open     — <marker> @ file:line → why, and what input unblocks it
-```
-
-## Removing markers
-
-A marker comes out **only when its intent is genuinely met** — not when you've
-made a plausible-looking edit near it.
-
-- `AI-VERIFY:` — remove only after you've actually verified; carry the finding into your report.
-- `AI-QUESTION:` — don't remove without the human's answer or OK. Deleting someone's question because you guessed is the exact failure this skill exists to prevent.
-- Can't resolve one? **Leave it in place.** A brief inline note on *why* it's blocked (e.g. `AI-FIX: … — blocked: needs product decision on X`) helps the next pass. Never delete a marker you didn't resolve, and never spawn a fresh marker to punt real work.
+Remove a marker only when its intent is genuinely complete. Keep unresolved
+markers in place. For `AI-VERIFY:`, retain the finding in the final report. For
+`AI-QUESTION:`, require the human's answer or explicit approval before removal.
+Do not create a fresh marker merely to defer work that is already in scope.
