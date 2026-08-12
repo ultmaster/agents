@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-UI_SCRIPTS="${REPO_ROOT}/skills/ui-runtime-proof/scripts"
+UI_SCRIPTS="${REPO_ROOT}/skills/ui-work/scripts"
 LAUNCH="${UI_SCRIPTS}/launch.sh"
 TEARDOWN="${UI_SCRIPTS}/teardown.sh"
 CHROME_RECOVER="${UI_SCRIPTS}/chrome-recover.sh"

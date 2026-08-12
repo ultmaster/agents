@@ -88,8 +88,8 @@ merely making the current run green.
 ## UI changes
 
 Automated component and interaction coverage is necessary but does not prove
-the rendered result looks right. After tests pass, use the `ui-runtime-proof` skill
-to drive the real interface, inspect the screenshot, and compare it with the
+the rendered result looks right. After tests pass, use the `ui-work` skill to
+drive the real interface, inspect the screenshot, and compare it with the
 approved design when one exists.
 
 ## Report

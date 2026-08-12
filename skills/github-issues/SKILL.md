@@ -107,7 +107,7 @@ session token in arguments, bodies, logs, or commits.
 4. For non-trivial work, post the diagnosis and plan, then mark `in-progress`.
 5. Link each meaningful progress update to `owner/repo@sha`, a commit URL, or a
    PR. Match proof to the change: tests/logs for logic, rendered screenshots for
-   UI behavior. For UI work, use the `ui-runtime-proof` skill and attach the inspected
+   UI behavior. For UI work, use the `ui-work` skill and attach the inspected
    runtime screenshots to the issue with the route and state they prove.
 6. Post final proof and set `resolved`. Agents never close or reopen issues; a
    human verifies the evidence and changes issue state.

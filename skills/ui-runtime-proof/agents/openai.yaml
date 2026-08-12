@@ -1,4 +1,0 @@
-interface:
-  display_name: "UI Runtime Proof"
-  short_description: "Verify running UI without harming user work"
-  default_prompt: "Use $ui-runtime-proof to verify this change in the running interface and capture proof."

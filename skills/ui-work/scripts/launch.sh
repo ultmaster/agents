@@ -66,7 +66,7 @@ command -v setsid >/dev/null 2>&1 || die 'setsid is required to isolate the proc
 CWD=$(cd "$CWD" && pwd -P)
 if [ -z "$STATE" ]; then
   root_id=$(printf '%s' "$CWD" | cksum | awk '{print $1}')
-  STATE="${TMPDIR:-/tmp}/ui-runtime-proof/stack-$root_id.state"
+  STATE="${TMPDIR:-/tmp}/ui-work/stack-$root_id.state"
 fi
 if [ -z "$LOG" ]; then
   LOG="${STATE%.state}-$(date +%Y%m%d-%H%M%S)-$$.log"
