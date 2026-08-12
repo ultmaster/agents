@@ -1,77 +1,45 @@
 # Personal Agent Instructions
 
-This repository stores guidance intended to work across unrelated projects and
-agent harnesses.
-
-## Scope
-
-- Keep only personal preferences and workflows that are useful in more than one
-  repository. Leave architecture, commands, package names, and exceptions that
-  belong to one project in that project's instructions.
-- Treat `skills/` as the canonical portable skill tree. Keep
-  harness-specific configuration in `.codex/` or `.claude/` only when a shared
-  skill or instruction cannot express it.
-- Name a personal skill for what it concretely does, never with a generic name a
-  project would reasonably choose for its own. Same-named skills do not merge:
-  Claude Code resolves personal above project, so a personal `ci` or `test`
-  silently makes every project's own version unreachable. Distinct names keep
-  both available, and the more specific description wins where it should.
-- When a repository has its own skill covering the same ground, prefer it for
-  what is true about that project — its commands, layout, and conventions. The
-  personal skill still owns the portable safety rules.
-- Never commit credentials, generated caches, raw transcripts, or other private
-  runtime state. Distill conversation history into concise rules instead.
+Portable preferences for work across unrelated repositories and agent harnesses.
+Anything specific to one project — its commands, layout, branches, and
+conventions — belongs to that project's own instructions and wins there.
 
 ## Working style
 
-- Treat the named task, phase, design, or pull request as a hard scope boundary.
-  Understand the surrounding structure and trace concrete callers before
-  changing it. Do not fold in adjacent fixes, refactors, or documents unless
-  they are necessary; ask before expanding the scope.
+- Treat the named task, phase, or pull request as a scope boundary. Do not fold
+  in adjacent fixes, refactors, or documents; ask before expanding the scope.
 - Prefer the smallest coherent design with one clear owner for each behavior.
-  Before adding an abstraction or another representation of the same concept,
-  state the concrete problem it solves and check whether an existing owner can
-  solve it.
-- Keep transient plans in the agent harness. Treat an existing canonical
-  proposal or plan as the source of truth. When planning documentation itself is
-  in scope, update that artifact in place; do not create a parallel plan or spec
-  unless the user asks for a new durable artifact.
-- Before declaring an environment blocker or handing executable work back to the
-  user, inspect the repository's tooling and configuration and attempt the safe,
-  documented path. Request the required execution permission when sandboxing is
-  the blocker; do not mistake a sandbox failure for a missing host capability.
-- Complete the full authorized scope and run the relevant verification surface,
-  not only the narrowest passing check. For UI or visual changes, verify the real
-  running interface and inspect the produced visual evidence. Report unfinished
-  background work and unrun checks explicitly.
+  Before adding an abstraction or a second representation of the same concept,
+  say what problem it solves and why an existing owner cannot.
+- Update an existing plan, proposal, or spec in place. Do not leave a parallel
+  one behind unless asked for a new durable artifact.
+- Before reporting an environment blocker, inspect the project's tooling and try
+  the documented path. A sandbox denial is not a missing host capability; ask
+  for the execution permission instead.
+- Run the verification a change actually needs, not only the narrowest passing
+  check, and say plainly what was left unrun or unfinished.
 
 ## Git and GitHub
 
-- Before editing, reviewing, committing, merging, or opening a pull request,
-  identify the repository root, intended working branch, and base/head
-  relationship. Never assume the checked-out branch owns the work; ask when
-  ownership remains ambiguous. Review the actual base/head diff and history,
-  not only the pull request description or current checkout.
-- Inspect remotes before opening a pull request. When a canonical `upstream`
-  repository exists, target the pull request there and use the personal fork
-  only as the pushed head remote, unless the user explicitly requests another
-  target.
-- In Codex, request the approved host/out-of-sandbox execution path before every
-  direct `gh` command and every script or wrapper that invokes `gh`, including
-  reads. The sandbox cannot use the host's GitHub authentication reliably; do
-  not interpret that failure as evidence that credentials are missing.
-- Make coherent, reviewable commits when a completed stage has a stable boundary.
-  Treat committing, pushing, and opening a pull request as distinct actions and
-  report their states precisely. Do not push, publish, or open a pull request
-  unless the user authorized that outward action.
+- Confirm the repository root and intended branch before committing. A checkout
+  is not evidence of which branch owns the work, and the same repository may be
+  checked out more than once.
+- Review the real base/head diff and history, not the pull request description.
+- Check remotes before opening a pull request. Where a canonical `upstream`
+  exists, target it and use the fork only as the head remote.
+- In Codex, run `gh` outside the sandbox — reads included, and for scripts that
+  wrap it. Sandboxed, `gh` cannot reach the host's credentials and reports the
+  user as logged out when they are not. Request the escalated execution rather
+  than reporting a login problem.
+- Treat committing, pushing, and opening a pull request as separate actions and
+  report their states precisely. Do not push or publish without authorization.
 
-## Maintaining the library
+## Skills and private state
 
-- Preserve source material exactly in its import commit. Make portability edits
-  in a later commit so provenance remains reviewable.
-- Keep skills focused, self-contained, and concise. Put essential trigger
-  conditions in `SKILL.md` frontmatter and validate changed skills before
-  committing them.
-- Prefer capability-based wording over repository names, fixed package layouts,
-  usernames, ports, or tool paths. Discover project details from local
-  instructions and configuration at runtime.
+- When a repository has its own skill covering the same ground, prefer it for
+  that project's commands, layout, and conventions. The personal skill still
+  owns the portable safety rules.
+- Never commit credentials, caches, raw transcripts, or other private runtime
+  state.
+- When changing the personal agent library itself, follow that repository's
+  `AGENTS.md`.
