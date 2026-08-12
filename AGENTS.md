@@ -60,7 +60,13 @@ is not this repository's maintenance guide.
 - Keep `setup.sh` idempotent and conflict-safe. It must report all conflicts
   before writing and must never overwrite or delete an existing user path.
 - Keep `--dry-run` truthful and preserve support for `HOME`, `CODEX_HOME`,
-  `CLAUDE_CONFIG_DIR`, and isolated `--target-home` verification.
+  `CLAUDE_CONFIG_DIR`, `AGENTS_HOME`, and isolated `--target-home` verification.
+- Keep link ownership evidence-based. A link may be pruned, replaced, or
+  uninstalled only when the manifest records it or it points into this
+  repository's skills directory; pruning and replacement additionally require
+  that its target no longer exists. Everything else is the user's.
+- Keep `--uninstall` limited to links this installer owns and the manifest it
+  wrote. It must never remove a directory or a link to another source.
 - Install individual skill links so unrelated user skills can coexist. Never
   replace or write into `~/.codex/skills`, which may contain managed skills.
 - Do not make `setup.sh` create links inside this repository.
@@ -73,7 +79,8 @@ is not this repository's maintenance guide.
 - Validate every changed skill with the skill validator and forward-test any
   changed helper against a disposable fixture.
 - For installer changes, exercise dry-run, first install, idempotent reinstall,
-  and preserved-conflict behavior under a disposable `--target-home`.
+  preserved-conflict behavior, a relocated checkout, and uninstall under a
+  disposable `--target-home`.
 - Confirm `find . -path './.git' -prune -o -type l -print` produces no paths.
 - Before committing, confirm the index contains no mode `120000` entries.
 

@@ -3,6 +3,7 @@
 set -u -o pipefail
 
 export LC_ALL=C
+unset AGENTS_HOME
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 setup_script="${repo_root}/setup.sh"
@@ -144,6 +145,15 @@ snapshot_tree() {
   )
 }
 
+make_fixture_source() {
+  local fixture_root=$1
+  mkdir -p -- "${fixture_root}/skills/fixture-skill" || return 1
+  cp -- "$setup_script" "${fixture_root}/setup.sh" || return 1
+  cp -- "${repo_root}/RULES.md" "${fixture_root}/RULES.md" || return 1
+  printf '%s\n' '---' 'name: fixture-skill' 'description: Fixture.' '---' \
+    >"${fixture_root}/skills/fixture-skill/SKILL.md" || return 1
+}
+
 write_mkdir_race_wrapper() {
   local bin_dir=$1
   mkdir -p -- "$bin_dir" || fail "could not create fake command directory"
@@ -181,7 +191,7 @@ test_help_and_argument_validation() {
 
   capture "$setup_script" --help
   assert_status 0
-  assert_output_contains 'Usage: setup.sh [--dry-run] [--prune] [--target-home DIRECTORY]'
+  assert_output_contains 'Usage: setup.sh [--dry-run] [--prune | --uninstall] [--target-home DIRECTORY]'
 
   capture "$setup_script" -h
   assert_status 0
@@ -190,6 +200,10 @@ test_help_and_argument_validation() {
   capture "$setup_script" --unknown
   assert_status 2
   assert_output_contains 'Usage: setup.sh'
+
+  capture "$setup_script" --prune --uninstall
+  assert_status 2
+  assert_output_contains '--prune and --uninstall cannot be combined'
 
   capture "$setup_script" --target-home
   assert_status 2
@@ -240,6 +254,7 @@ test_dry_run_makes_no_writes() {
     "$setup_script" --dry-run --target-home "$target_home"
   assert_status 0
   assert_output_prefix_count "$expected_count" 'would link '
+  assert_output_contains "would record ${target_home}/.agents/setup-manifest"
   assert_absent "$target_home"
   assert_absent "${case_root}/ignored-home"
   assert_absent "${case_root}/ignored-codex"
@@ -247,7 +262,7 @@ test_dry_run_makes_no_writes() {
 }
 
 test_exact_first_install() {
-  local case_root target_home expected_count actual_count directory_count file_count
+  local case_root target_home expected_count actual_count directory_count file_count manifest_lines
   case_root=$(new_case_root) || fail "could not create case root"
   target_home="${case_root}/home"
   expected_count=$(current_link_count)
@@ -262,8 +277,19 @@ test_exact_first_install() {
   directory_count=$(find "$target_home" -mindepth 1 -type d -print | awk 'END { print NR + 0 }')
   assert_eq 5 "$directory_count" 'created directory count'
   file_count=$(find "$target_home" -type f -print | awk 'END { print NR + 0 }')
-  assert_eq 0 "$file_count" 'created regular file count'
+  assert_eq 1 "$file_count" 'created regular file count'
   assert_absent "${target_home}/.codex/skills"
+
+  # The manifest is how a later run recognizes these links after this checkout
+  # moves, so it must record every link by target and source.
+  assert_regular_file "${target_home}/.agents/setup-manifest"
+  assert_output_contains "recorded ${target_home}/.agents/setup-manifest"
+  manifest_lines=$(awk 'NR > 1' "${target_home}/.agents/setup-manifest" | awk 'END { print NR + 0 }')
+  assert_eq "$expected_count" "$manifest_lines" 'manifest entry count'
+  assert_eq \
+    "${target_home}/.codex/AGENTS.md	${repo_root}/RULES.md" \
+    "$(awk 'NR == 2' "${target_home}/.agents/setup-manifest")" \
+    'first manifest entry'
 }
 
 test_environment_routing() {
@@ -392,6 +418,144 @@ test_reports_and_prunes_only_this_repository_stale_links() {
   if [[ "$RUN_OUTPUT" == *foreign-skill* ]]; then
     fail "a link outside this repository was treated as stale: ${RUN_OUTPUT}"
   fi
+}
+
+test_relinks_after_the_checkout_moves() {
+  local case_root origin moved target_home link_count
+  case_root=$(new_case_root) || fail "could not create case root"
+  origin="${case_root}/origin"
+  moved="${case_root}/moved"
+  target_home="${case_root}/home"
+  make_fixture_source "$origin" || fail "could not create source fixture"
+
+  capture "${origin}/setup.sh" --target-home "$target_home"
+  assert_status 0
+  assert_link_target \
+    "${target_home}/.claude/skills/fixture-skill" "${origin}/skills/fixture-skill"
+  assert_regular_file "${target_home}/.agents/setup-manifest"
+
+  mv -- "$origin" "$moved" || fail "could not move the checkout"
+
+  # Every link now dangles, and each sits on a path this run wants. The manifest
+  # identifies them as ours, but a plain run still refuses to touch them.
+  capture "${moved}/setup.sh" --target-home "$target_home"
+  assert_status 1
+  assert_output_contains 'stale link'
+  assert_output_contains 'rerun with --prune'
+  assert_link_target \
+    "${target_home}/.claude/skills/fixture-skill" "${origin}/skills/fixture-skill"
+  assert_link_target "${target_home}/.codex/AGENTS.md" "${origin}/RULES.md"
+
+  capture "${moved}/setup.sh" --target-home "$target_home" --prune --dry-run
+  assert_status 0
+  assert_output_contains "would prune ${target_home}/.claude/skills/fixture-skill"
+  assert_output_contains \
+    "would link ${target_home}/.claude/skills/fixture-skill -> ${moved}/skills/fixture-skill"
+  assert_link_target \
+    "${target_home}/.claude/skills/fixture-skill" "${origin}/skills/fixture-skill"
+
+  capture "${moved}/setup.sh" --target-home "$target_home" --prune
+  assert_status 0
+  assert_link_target "${target_home}/.codex/AGENTS.md" "${moved}/RULES.md"
+  assert_link_target "${target_home}/.claude/CLAUDE.md" "${moved}/RULES.md"
+  assert_link_target \
+    "${target_home}/.agents/skills/fixture-skill" "${moved}/skills/fixture-skill"
+  assert_link_target \
+    "${target_home}/.claude/skills/fixture-skill" "${moved}/skills/fixture-skill"
+  link_count=$(find "$target_home" -type l -print | awk 'END { print NR + 0 }')
+  assert_eq 4 "$link_count" 'links after relocation'
+
+  # The rewritten manifest describes the new location, so the next run is clean.
+  capture "${moved}/setup.sh" --target-home "$target_home"
+  assert_status 0
+  assert_output_prefix_count 4 'already linked '
+}
+
+test_uninstall_removes_only_installed_links() {
+  local case_root fixture_root target_home foreign_link
+  case_root=$(new_case_root) || fail "could not create case root"
+  fixture_root="${case_root}/source"
+  target_home="${case_root}/home"
+  foreign_link="${target_home}/.agents/skills/foreign-skill"
+  make_fixture_source "$fixture_root" || fail "could not create source fixture"
+  mkdir -p -- "${target_home}/.claude/skills/external-skill" \
+    || fail "could not seed an unrelated skill"
+  printf 'external\n' >"${target_home}/.claude/skills/external-skill/owner.txt"
+
+  capture "${fixture_root}/setup.sh" --target-home "$target_home"
+  assert_status 0
+  ln -s -- "${case_root}/nowhere/foreign-skill" "$foreign_link" \
+    || fail "could not seed a foreign dangling link"
+
+  capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall --dry-run
+  assert_status 0
+  assert_output_contains 'would uninstall 4 link(s)'
+  assert_output_contains "would remove ${target_home}/.agents/setup-manifest"
+  assert_link_target "${target_home}/.claude/CLAUDE.md" "${fixture_root}/RULES.md"
+  assert_regular_file "${target_home}/.agents/setup-manifest"
+
+  capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall
+  assert_status 0
+  assert_output_contains 'uninstalled 4 link(s)'
+  assert_absent "${target_home}/.codex/AGENTS.md"
+  assert_absent "${target_home}/.claude/CLAUDE.md"
+  assert_absent "${target_home}/.agents/skills/fixture-skill"
+  assert_absent "${target_home}/.claude/skills/fixture-skill"
+  assert_absent "${target_home}/.agents/setup-manifest"
+
+  # Directories, unrelated skills, and links to other sources all survive.
+  assert_directory "${target_home}/.agents/skills"
+  assert_directory "${target_home}/.claude/skills"
+  assert_file_text "${target_home}/.claude/skills/external-skill/owner.txt" 'external'
+  assert_link_target "$foreign_link" "${case_root}/nowhere/foreign-skill"
+
+  capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall
+  assert_status 0
+  assert_output_contains 'uninstalled 0 link(s)'
+}
+
+test_agents_home_routing() {
+  local case_root home codex_root claude_root agents_home skill_name
+  case_root=$(new_case_root) || fail "could not create case root"
+  home="${case_root}/home"
+  codex_root="${case_root}/codex-config"
+  claude_root="${case_root}/claude-config"
+  agents_home="${case_root}/agents-config"
+  skill_name=${skill_names[0]}
+  mkdir -p -- "$home" || fail "could not create home"
+
+  capture env \
+    HOME="$home" \
+    CODEX_HOME="$codex_root" \
+    CLAUDE_CONFIG_DIR="$claude_root" \
+    AGENTS_HOME="$agents_home" \
+    "$setup_script"
+  assert_status 0
+  assert_link_target "${codex_root}/AGENTS.md" "${repo_root}/RULES.md"
+  assert_link_target "${claude_root}/CLAUDE.md" "${repo_root}/RULES.md"
+  assert_link_target \
+    "${agents_home}/skills/${skill_name}" "${repo_root}/skills/${skill_name}"
+  assert_link_target \
+    "${claude_root}/skills/${skill_name}" "${repo_root}/skills/${skill_name}"
+  assert_regular_file "${agents_home}/setup-manifest"
+  assert_absent "${home}/.agents"
+  assert_absent "${codex_root}/skills"
+}
+
+test_rejects_a_manifest_path_it_does_not_own() {
+  local case_root target_home link_count
+  case_root=$(new_case_root) || fail "could not create case root"
+  target_home="${case_root}/home"
+  mkdir -p -- "${target_home}/.agents" || fail "could not seed the agents directory"
+  printf 'user data\n' >"${target_home}/.agents/setup-manifest"
+
+  capture "$setup_script" --target-home "$target_home"
+  assert_status 1
+  assert_output_contains 'is not this setup manifest'
+  assert_output_contains 'no links were changed'
+  assert_file_text "${target_home}/.agents/setup-manifest" 'user data'
+  link_count=$(find "$target_home" -type l -print | awk 'END { print NR + 0 }')
+  assert_eq 0 "$link_count" 'links after a foreign manifest path'
 }
 
 test_completes_partial_valid_install() {
@@ -627,6 +791,22 @@ record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='reports and prunes only this repository stale links'
 (test_reports_and_prunes_only_this_repository_stale_links)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='relinks after the checkout moves'
+(test_relinks_after_the_checkout_moves)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='uninstall removes only installed links'
+(test_uninstall_removes_only_installed_links)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='agents home routing'
+(test_agents_home_routing)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='rejects a manifest path it does not own'
+(test_rejects_a_manifest_path_it_does_not_own)
 record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='completes partial valid install'

@@ -59,6 +59,17 @@ installer never replaces a file, directory, dangling link, or link to another
 source; it reports every conflict before changing anything. It does not touch
 `~/.codex/skills`, where bundled and managed Codex skills may live.
 
+Every install records what it linked in `~/.agents/setup-manifest`, so a later
+run recognizes its own links even after this checkout is renamed or moved.
+Moving the checkout leaves every link dangling; rerun `./setup.sh --prune` from
+the new location to re-point them. Run `./setup.sh --uninstall` before deleting
+the checkout: it removes the links it owns and the manifest, leaving
+directories and unrelated links in place.
+
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` relocate the two rules files. Skills live
+under `AGENTS_HOME` (default `~/.agents`) because `~/.agents/skills` is a shared
+discovery path rather than Codex state. `--target-home` ignores all three.
+
 Codex and Claude detect skill edits automatically in most cases. Restart the
 client if a newly created user skill directory does not appear. The target paths
 follow the official [Codex instruction](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
