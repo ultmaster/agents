@@ -363,6 +363,8 @@ remote_url_to_repo() {
 
 normalize_repo_spec() {
   local value="$1" a b c d
+  [[ "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] \
+    || die "--repo must not contain line breaks"
   if [[ "${value}" == *"://"* || "${value}" == *@*:* ]]; then
     remote_url_to_repo "${value}" || die "cannot parse --repo as a GitHub repository: ${value}"
     return 0
@@ -377,6 +379,31 @@ normalize_repo_spec() {
   else
     die "--repo must be owner/repo (or host/owner/repo), not '${value}'"
   fi
+}
+
+# Keep shared caches unambiguous and inspectable. Always include the host so a
+# GitHub Enterprise repository cannot overlap the same owner/repo on github.com.
+# Restrict each path component before interpolating it below; --repo is user
+# input, and values such as ../repo must never escape CACHE_BASE.
+default_issue_cache_dir() {
+  local repo="$1" issue="$2" host owner name extra component
+  if [[ "${repo}" == */*/* ]]; then
+    IFS=/ read -r host owner name extra <<<"${repo}"
+  else
+    host="github.com"
+    IFS=/ read -r owner name extra <<<"${repo}"
+  fi
+  [[ -n "${host}" && -n "${owner}" && -n "${name}" && -z "${extra:-}" ]] \
+    || die "cannot derive a cache path from repository '${repo}'"
+  for component in "${host}" "${owner}" "${name}"; do
+    [[ "${component}" != "." && "${component}" != ".." \
+      && "${component}" =~ ^[A-Za-z0-9_.-]+$ ]] \
+      || die "repository '${repo}' contains a cache-unsafe path component"
+  done
+  host="${host,,}"
+  owner="${owner,,}"
+  name="${name,,}"
+  printf '%s/%s/%s/%s/%s' "${CACHE_BASE}" "${host}" "${owner}" "${name}" "${issue}"
 }
 
 # Discover the canonical tracker from local context. An explicit upstream remote
@@ -609,7 +636,7 @@ cmd_view() {
       --dry-run) dry_run=1 ;;
       -h | --help)
         echo "Usage: issue-tracker.sh view <issue> [--repo R] [--dir DIR] [--no-images]"
-        echo "  Caches issue.json + issue.md + images under cache/<repo>/<issue> by default."
+        echo "  Caches issue.json + issue.md + images under cache/<host>/<owner>/<repo>/<issue> by default."
         return 0 ;;
       -*) die "Unknown view option: $1" ;;
       *) [[ -z "${num}" ]] || die "view takes a single issue number"; num="$1" ;;
@@ -619,16 +646,14 @@ cmd_view() {
   [[ -n "${num}" ]] || die "view requires an issue number"
   require_issue_number "${num}"
   local repo; repo="$(resolve_repo "${repo_in}")"
+  [[ -n "${dir}" ]] || dir="$(default_issue_cache_dir "${repo}" "${num}")"
   if ((dry_run)); then
     printf '+ gh issue view %q -R %q --json number,title,state,labels,author,assignees,milestone,createdAt,updatedAt,url,body,comments\n' "${num}" "${repo}"
-    local cache_key="${repo//\//__}"
-    printf '+ cache -> %q\n' "${dir:-${CACHE_BASE}/${cache_key}/${num}}"
+    printf '+ cache -> %q\n' "${dir}"
     return 0
   fi
   require_gh_auth "${repo}"
 
-  local cache_key="${repo//\//__}"
-  [[ -n "${dir}" ]] || dir="${CACHE_BASE}/${cache_key}/${num}"
   mkdir -p "${dir}"
 
   local json

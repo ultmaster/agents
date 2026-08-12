@@ -55,9 +55,12 @@ Read-only commands:
 ```
 
 `view` prints the body and every comment, then caches `issue.json`, `issue.md`,
-and downloaded attachments under `cache/<repo>/<issue>/` unless `--dir` is
-given. Open every cached image needed to understand the report; printing the
-paths is not equivalent to inspecting them.
+and downloaded attachments under `cache/<host>/<owner>/<repo>/<issue>/` unless
+`--dir` is given. The host is always explicit (`github.com` for ordinary
+`owner/repo` inputs), keeping repositories on different GitHub hosts distinct.
+Repository path components are lowercased because GitHub identity is
+case-insensitive. Open every cached image needed to understand the report;
+printing the paths is not equivalent to inspecting them.
 
 Both the cache and `.env` live in the repository's own profile directory when it
 has one — the first of `$ISSUE_TRACKER_PROFILE_DIR`,

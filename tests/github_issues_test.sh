@@ -15,7 +15,12 @@ mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/home" "${TEST_ROOT}/tmp"
 export HOME="${TEST_ROOT}/home"
 export TMPDIR="${TEST_ROOT}/tmp"
 export PATH="${TEST_ROOT}/bin:/usr/local/bin:/usr/bin:/bin"
-unset ISSUE_TRACKER_SIGNATURE GH_SESSION_TOKEN GITHUB_TOKEN GH_TOKEN
+unset ISSUE_TRACKER_PROFILE_DIR ISSUE_TRACKER_SIGNATURE GH_SESSION_TOKEN GITHUB_TOKEN GH_TOKEN
+# Behavioral tests must not inherit the ignored, repository-local .env. The
+# profile-resolution test below deliberately unsets this override.
+ISSUE_TRACKER_ENV_FILE="${TEST_ROOT}/empty.env"
+export ISSUE_TRACKER_ENV_FILE
+: >"${ISSUE_TRACKER_ENV_FILE}"
 
 cat >"${TEST_ROOT}/bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
@@ -290,12 +295,61 @@ test_view_caches_attachments_without_token_in_arguments() {
   assert_not_contains "${curl_log}" 'fake-secret-token'
 }
 
+test_default_cache_is_structured_by_host_and_repository() {
+  new_case
+  local profile="${CASE_DIR}/profile"
+
+  export GH_FAKE_JSON='{"number":5,"title":"GitHub project","state":"OPEN","labels":[],"author":{"login":"reporter"},"assignees":[],"milestone":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","url":"https://github.com/owner/project/issues/5","body":"body","comments":[]}'
+  capture env ISSUE_TRACKER_PROFILE_DIR="${profile}" \
+    "${TRACKER}" view 5 --repo owner/project --no-images
+  assert_eq 0 "${RUN_STATUS}"
+  assert_eq 'GitHub project' \
+    "$(jq -r .title "${profile}/cache/github.com/owner/project/5/issue.json")"
+
+  export GH_FAKE_JSON='{"number":5,"title":"Enterprise project","state":"OPEN","labels":[],"author":{"login":"reporter"},"assignees":[],"milestone":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","url":"https://ghe.example/owner/project/issues/5","body":"body","comments":[]}'
+  capture env ISSUE_TRACKER_PROFILE_DIR="${profile}" \
+    "${TRACKER}" view 5 --repo ghe.example/owner/project --no-images
+  assert_eq 0 "${RUN_STATUS}"
+  assert_eq 'Enterprise project' \
+    "$(jq -r .title "${profile}/cache/ghe.example/owner/project/5/issue.json")"
+
+  export GH_FAKE_JSON='{"number":5,"title":"Second repository","state":"OPEN","labels":[],"author":{"login":"reporter"},"assignees":[],"milestone":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","url":"https://github.com/owner/second/issues/5","body":"body","comments":[]}'
+  capture env ISSUE_TRACKER_PROFILE_DIR="${profile}" \
+    "${TRACKER}" view 5 --repo owner/second --no-images
+  assert_eq 0 "${RUN_STATUS}"
+  assert_eq 'Second repository' \
+    "$(jq -r .title "${profile}/cache/github.com/owner/second/5/issue.json")"
+
+  capture env ISSUE_TRACKER_PROFILE_DIR="${profile}" \
+    "${TRACKER}" view 5 --repo GITHUB.COM/Owner/Project --dry-run
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" \
+    "${profile}/cache/github.com/owner/project/5"
+
+  : >"${GH_FAKE_LOG}"
+  local unsafe
+  for unsafe in \
+    '../project' \
+    '../owner/project' \
+    'owner/..' \
+    'owner/.' \
+    'owner/proj\ect' \
+    'owner/project%2Fescape' \
+    $'owner/proj\nect'; do
+    capture env ISSUE_TRACKER_PROFILE_DIR="${profile}" \
+      "${TRACKER}" view 5 --repo "${unsafe}"
+    [ "${RUN_STATUS}" -ne 0 ] || fail "unsafe cache path was accepted: ${unsafe}"
+  done
+  [ ! -s "${GH_FAKE_LOG}" ] || fail 'unsafe cache path invoked gh'
+}
+
 # Settings and cached issue material must follow the repository being worked on.
 # This skill installs at user scope, so anything stored beside it is shared by
 # every project. Exercise a disposable copy so a skill-root .env can be planted
 # without touching the installed tree.
 test_repository_profile_owns_settings_and_cache() {
   new_case
+  unset ISSUE_TRACKER_ENV_FILE
   local skill_copy="${CASE_DIR}/disposable-skill/issue-tracker"
   mkdir -p "${skill_copy}"
   cp -R "${REPO_ROOT}/skills/github-issues/scripts" "${skill_copy}/"
@@ -311,7 +365,7 @@ test_repository_profile_owns_settings_and_cache() {
     --repo owner/project --dry-run
   assert_eq 0 "${RUN_STATUS}"
   capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
-  assert_contains "${RUN_OUTPUT}" "${skill_copy}/cache/owner__project/5"
+  assert_contains "${RUN_OUTPUT}" "${skill_copy}/cache/github.com/owner/project/5"
 
   # A repository profile directory owns settings outright. An empty one must not
   # fall back to the skill's signature; that fallback is the leak being prevented.
@@ -333,7 +387,7 @@ test_repository_profile_owns_settings_and_cache() {
   capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
   assert_eq 0 "${RUN_STATUS}"
   assert_contains "${RUN_OUTPUT}" \
-    "${checkout}/.agents/skills/github-issues/cache/owner__project/5"
+    "${checkout}/.agents/skills/github-issues/cache/github.com/owner/project/5"
   assert_not_contains "${RUN_OUTPUT}" "${skill_copy}/cache"
 
   # The .claude profile applies when .agents is absent; .agents wins over it.
@@ -341,12 +395,13 @@ test_repository_profile_owns_settings_and_cache() {
   mkdir -p "${checkout}/.claude/skills/github-issues"
   capture env -C "${checkout}" "${tracker}" view 5 --repo owner/project --dry-run
   assert_contains "${RUN_OUTPUT}" \
-    "${checkout}/.claude/skills/github-issues/cache/owner__project/5"
+    "${checkout}/.claude/skills/github-issues/cache/github.com/owner/project/5"
 
   # An explicit override beats discovery.
   capture env -C "${checkout}" ISSUE_TRACKER_PROFILE_DIR="${CASE_DIR}/explicit" \
     "${tracker}" view 5 --repo owner/project --dry-run
-  assert_contains "${RUN_OUTPUT}" "${CASE_DIR}/explicit/cache/owner__project/5"
+  assert_contains "${RUN_OUTPUT}" \
+    "${CASE_DIR}/explicit/cache/github.com/owner/project/5"
 
   # Discovery never creates a profile directory in a repository that did not opt in.
   [ ! -e "${CASE_DIR}/explicit" ] || fail 'an override path was created on disk'
@@ -360,6 +415,7 @@ run_test 'composes signed plain and inline-image bodies' test_signed_body_and_in
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'caches attachments without tokens in curl arguments' test_view_caches_attachments_without_token_in_arguments
+run_test 'structures default cache paths by host and repository' test_default_cache_is_structured_by_host_and_repository
 run_test 'resolves settings and cache from the repository profile' test_repository_profile_owns_settings_and_cache
 
 if [ "${FAILED}" -ne 0 ]; then
