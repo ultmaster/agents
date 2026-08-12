@@ -28,9 +28,10 @@ conventions — belongs to that project's own instructions and wins there.
 - Check remotes before opening a pull request. Where a canonical `upstream`
   exists, target it and use the fork only as the head remote.
 - In Codex, run `gh` outside the sandbox — reads included, and for scripts that
-  wrap it. Sandboxed, `gh` cannot reach the host's credentials and reports the
-  user as logged out when they are not. Request the escalated execution rather
-  than reporting a login problem.
+  wrap it. Sandboxed, `gh` cannot reach the host's credential store and reports
+  the user as logged out when they are not. Ask for escalated execution
+  (`sandbox_permissions=require_escalated`) rather than reporting a login
+  problem.
 - Treat committing, pushing, and opening a pull request as separate actions and
   report their states precisely. Do not push or publish without authorization.
 

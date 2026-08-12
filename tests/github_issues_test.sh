@@ -37,7 +37,7 @@ copy_body_file() {
 }
 
 case "${1:-} ${2:-}" in
-  'auth status') exit 0 ;;
+  'auth status') exit "${GH_FAKE_AUTH_STATUS:-0}" ;;
   'auth token') printf '%s\n' 'fake-secret-token'; exit 0 ;;
   'api --hostname') printf '%s\n' 'fake-agent'; exit 0 ;;
   'repo view') printf '%s\n' "${GH_FAKE_REPO:-fallback/repository}"; exit 0 ;;
@@ -176,6 +176,19 @@ test_validation_dry_run_and_gate() {
   [ "${RUN_STATUS}" -ne 0 ] || fail 'outward create was accepted without --yes'
   assert_contains "${RUN_OUTPUT}" 're-run with --yes to confirm'
   [ ! -s "${GH_FAKE_LOG}" ] || fail 'confirmation failure invoked gh'
+}
+
+test_auth_failure_names_the_sandbox_before_a_login() {
+  new_case
+
+  # A sandbox that blocks the credential store fails this check exactly as a
+  # signed-out account does. The message has to raise that first, or the agent
+  # relays a login problem the user does not have.
+  GH_FAKE_AUTH_STATUS=1 capture "${TRACKER}" list --repo owner/project
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'unauthenticated list was accepted'
+  assert_contains "${RUN_OUTPUT}" 'gh is not authenticated for github.com'
+  assert_contains "${RUN_OUTPUT}" 'sandboxed'
+  assert_contains "${RUN_OUTPUT}" 'escalated'
 }
 
 test_repository_discovery_prefers_upstream() {
@@ -341,6 +354,7 @@ test_repository_profile_owns_settings_and_cache() {
 
 printf 'issue-tracker tests\n'
 run_test 'validates dry runs, signatures, and write confirmation' test_validation_dry_run_and_gate
+run_test 'names the sandbox before blaming a GitHub login' test_auth_failure_names_the_sandbox_before_a_login
 run_test 'discovers the canonical upstream repository first' test_repository_discovery_prefers_upstream
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes

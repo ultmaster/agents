@@ -136,10 +136,17 @@ require_gh_auth() {
     && gh api --hostname "${host}" user --jq .login >/dev/null 2>&1; then
     return 0
   fi
+  # A sandboxed run cannot read the host's credential store, so this check fails
+  # the same way whether the account is signed out or merely out of reach. Say
+  # so: reporting a login problem the user does not have wastes their turn.
   cat >&2 <<AUTH
 error: gh is not authenticated for ${host}.
 
-Configure GitHub CLI auth before using issue-tracker.sh:
+If this run is sandboxed, the sandbox is blocking the credential store rather
+than the account being signed out. Re-run outside the sandbox with escalated
+permissions before reporting a login problem.
+
+Otherwise configure GitHub CLI auth before using issue-tracker.sh:
   gh auth login --hostname ${host} --scopes repo
 
 For automation, provide a token in GH_TOKEN (or GITHUB_TOKEN) with repo scope
@@ -1156,7 +1163,8 @@ DOC
   if login="$(gh api --hostname "${host}" user --jq .login 2>/dev/null)" && [[ -n "${login}" ]]; then
     printf '  ok    gh authenticated (user: %s)\n' "${login}"
   else
-    printf '  FAIL  gh not authenticated for %s — run: gh auth login -h %s\n' "${host}" "${host}"
+    printf '  FAIL  gh not authenticated for %s\n' "${host}"
+    printf '        sandboxed? retry with escalated permissions first; otherwise run: gh auth login -h %s\n' "${host}"
     fails=$((fails + 1))
   fi
 

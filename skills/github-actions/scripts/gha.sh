@@ -169,8 +169,22 @@ require_gh_auth() {
   local repo="$1" host
   require_gh
   host="$(repo_host "${repo}")"
-  gh auth status --hostname "${host}" >/dev/null 2>&1 ||
-    die "gh is not authenticated for ${host}; use 'gh auth login --hostname ${host}' or an approved token environment variable"
+  gh auth status --hostname "${host}" >/dev/null 2>&1 && return 0
+  # A sandboxed run cannot read the host's credential store, so this check fails
+  # the same way whether the account is signed out or merely out of reach. Say
+  # so: reporting a login problem the user does not have wastes their turn.
+  cat >&2 <<AUTH
+error: gh is not authenticated for ${host}.
+
+If this run is sandboxed, the sandbox is blocking the credential store rather
+than the account being signed out. Re-run outside the sandbox with escalated
+permissions before reporting a login problem.
+
+Otherwise authenticate on the host:
+  gh auth login --hostname ${host} --scopes repo,workflow
+For automation, set GH_TOKEN (or GITHUB_TOKEN) with repo and workflow scope.
+AUTH
+  exit 1
 }
 
 default_branch() {

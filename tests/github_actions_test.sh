@@ -81,7 +81,7 @@ cat > "${fake_bin}/gh" <<'FAKE_GH'
 set -euo pipefail
 printf '%s\n' "$*" >> "${GH_FAKE_LOG}"
 if [[ "$1 $2" == 'auth status' ]]; then
-  exit 0
+  exit "${GH_FAKE_AUTH_STATUS:-0}"
 fi
 if [[ "$1 $2" == 'run list' ]]; then
   case "${GH_FAKE_MODE:-empty}" in
@@ -116,6 +116,23 @@ set -e
 ((status != 0)) || fail 'GHA await swallowed a run-list failure'
 assert_contains "${output}" 'simulated run-list failure'
 assert_contains "${output}" 'failed to list workflow runs'
+
+# A sandbox that blocks the credential store fails the auth preflight exactly as
+# a signed-out account does. The message has to raise that first, or the agent
+# relays a login problem the user does not have.
+: > "${gh_log}"
+set +e
+output="$(
+  cd "${git_repo}"
+  PATH="${fake_bin}:${PATH}" GH_FAKE_LOG="${gh_log}" GH_FAKE_AUTH_STATUS=1 \
+    "${gha}" list --repo owner/repo 2>&1
+)"
+status=$?
+set -e
+((status != 0)) || fail 'GHA list ran without authentication'
+assert_contains "${output}" 'gh is not authenticated for github.com'
+assert_contains "${output}" 'sandboxed'
+assert_contains "${output}" 'escalated'
 
 : > "${gh_log}"
 set +e
