@@ -27,7 +27,7 @@ user-level discovery paths outside the checkout.
 | `test-strategy` | Choose truthful test boundaries and verify changes at the right layers. |
 | `ui-design-loop` | Run the design-review-implementation-promotion loop for visual work. |
 | `ui-runtime-proof` | Prove UI changes in the running application without harming user processes. |
-| `windows-shell-dev` | Diagnose shell and platform differences on Windows and WSL. |
+| `windows-dev` | Diagnose shell, filesystem, build, and process failures on Windows and WSL. |
 
 These names are deliberately concrete. A skill installed at user scope applies in
 every repository, and Claude Code resolves a personal skill above a project skill

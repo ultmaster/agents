@@ -1,4 +1,0 @@
-interface:
-  display_name: "Windows Shell Development"
-  short_description: "Diagnose Windows and WSL dev workflows"
-  default_prompt: "Use $windows-shell-dev to diagnose this repository's Windows development failure."
