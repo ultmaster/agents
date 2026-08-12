@@ -21,7 +21,8 @@ user-level discovery paths outside the checkout.
 | Skill | Purpose |
 | --- | --- |
 | `ai-marker-triage` | Triage typed AI markers without guessing away questions. |
-| `ci-operations` | Reproduce, inspect, trigger, and diagnose CI across providers. |
+| `circleci` | Reproduce, inspect, trigger, and diagnose CircleCI pipelines. |
+| `github-actions` | Reproduce, inspect, dispatch, and diagnose workflow runs. |
 | `github-issues` | Work GitHub issues as durable, evidence-backed task records. |
 | `test-strategy` | Choose truthful test boundaries and verify changes at the right layers. |
 | `ui-design-loop` | Run the design-review-implementation-promotion loop for visual work. |

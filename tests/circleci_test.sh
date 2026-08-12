@@ -3,8 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-gha="${repo_root}/skills/ci-operations/scripts/gha.sh"
-circle="${repo_root}/skills/ci-operations/scripts/circleci.sh"
+circle="${repo_root}/skills/circleci/scripts/circleci.sh"
 test_root="$(mktemp -d)"
 
 cleanup() {
@@ -13,7 +12,7 @@ cleanup() {
 trap cleanup EXIT
 
 fail() {
-  printf 'ci_operations_test: %s\n' "$*" >&2
+  printf 'circleci_test: %s\n' "$*" >&2
   exit 1
 }
 
@@ -57,40 +56,6 @@ parameters:
     default: false
 jobs: {}
 YAML
-
-output="$(cd "${git_repo}" && "${gha}" list --dry-run)"
-assert_contains "${output}" 'gh run list --repo canonical/project'
-assert_contains "${output}" '--branch feature/test'
-
-output="$(cd "${git_repo}" && CI_BRANCH=environment "${gha}" list --remote origin --dry-run)"
-assert_contains "${output}" '--repo personal/project'
-assert_contains "${output}" '--branch environment'
-
-output="$(cd "${git_repo}" && CI_BRANCH=environment "${gha}" list --repo ghe.example/acme/widget --branch explicit --workflow ci.yml --limit 4 --dry-run)"
-assert_contains "${output}" '--repo ghe.example/acme/widget'
-assert_contains "${output}" '--limit 4'
-assert_contains "${output}" '--workflow ci.yml'
-assert_contains "${output}" '--branch explicit'
-
-output="$(cd "${git_repo}" && "${gha}" await --repo owner/repo --workflow ci.yml --sha deadbeef --timeout 0 --dry-run)"
-assert_contains "${output}" 'gh run list --repo owner/repo'
-assert_contains "${output}" '--commit deadbeef'
-assert_contains "${output}" 'gh run watch --repo owner/repo \<run-id\> --exit-status'
-
-output="$(cd "${git_repo}" && "${gha}" watch 41 --repo owner/repo --dry-run)"
-assert_contains "${output}" 'gh run watch --repo owner/repo 41 --exit-status'
-output="$(cd "${git_repo}" && "${gha}" view 41 --failed --repo owner/repo --dry-run)"
-assert_contains "${output}" 'gh run view --repo owner/repo 41 --log-failed'
-output="$(cd "${git_repo}" && "${gha}" dispatch ci.yml --ref feature/test --field reason=manual --repo owner/repo --dry-run)"
-assert_contains "${output}" 'gh workflow run ci.yml --repo owner/repo --ref feature/test --field reason=manual'
-output="$(cd "${git_repo}" && "${gha}" rerun 41 --failed --repo owner/repo --dry-run)"
-assert_contains "${output}" 'gh run rerun --repo owner/repo 41 --failed'
-output="$(cd "${git_repo}" && "${gha}" cancel 41 --repo owner/repo --dry-run)"
-assert_contains "${output}" 'gh run cancel --repo owner/repo 41'
-
-expect_failure 're-run with --yes' "${gha}" dispatch ci.yml --ref main --repo owner/repo
-expect_failure 're-run with --yes' "${gha}" rerun 41 --repo owner/repo
-expect_failure 'non-negative/positive integer' "${gha}" await --repo owner/repo --branch main --timeout invalid --dry-run
 
 output="$(cd "${git_repo}" && "${circle}" list --branch feature/test --dry-run)"
 assert_contains "${output}" 'https://circleci.com/api/v2/project/gh/canonical/project/pipeline'
@@ -146,32 +111,6 @@ expect_failure 're-run with --yes' "${circle}" cancel workflow-1
 
 fake_bin="${test_root}/fake-bin"
 mkdir -p "${fake_bin}"
-cat > "${fake_bin}/gh" <<'FAKE_GH'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "${GH_FAKE_LOG}"
-if [[ "$1 $2" == 'auth status' ]]; then
-  exit 0
-fi
-if [[ "$1 $2" == 'run list' ]]; then
-  case "${GH_FAKE_MODE:-empty}" in
-    error)
-      printf 'simulated run-list failure\n' >&2
-      exit 42
-      ;;
-    id) printf '9001\n' ;;
-    empty) ;;
-  esac
-  exit 0
-fi
-if [[ "$1 $2" == 'run watch' ]]; then
-  printf 'watched\n'
-  exit 0
-fi
-printf 'unexpected fake gh invocation: %s\n' "$*" >&2
-exit 97
-FAKE_GH
-
 cat > "${fake_bin}/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -195,35 +134,7 @@ else
   printf '%s\n' '{}'
 fi
 FAKE_CURL
-chmod +x "${fake_bin}/gh" "${fake_bin}/curl"
-
-gh_log="${test_root}/gh.log"
-: > "${gh_log}"
-set +e
-output="$(
-  cd "${git_repo}"
-  PATH="${fake_bin}:${PATH}" GH_FAKE_LOG="${gh_log}" GH_FAKE_MODE=error \
-    "${gha}" await --repo owner/repo --branch main --timeout 0 2>&1
-)"
-status=$?
-set -e
-((status != 0)) || fail 'GHA await swallowed a run-list failure'
-assert_contains "${output}" 'simulated run-list failure'
-assert_contains "${output}" 'failed to list workflow runs'
-
-: > "${gh_log}"
-set +e
-output="$(
-  cd "${git_repo}"
-  PATH="${fake_bin}:${PATH}" GH_FAKE_LOG="${gh_log}" GH_FAKE_MODE=empty \
-    "${gha}" await --repo owner/repo --branch main --timeout 0 --interval 1 2>&1
-)"
-status=$?
-set -e
-((status != 0)) || fail 'GHA await unexpectedly found a run'
-assert_contains "${output}" 'within 0s'
-[[ "$(grep -c '^run list ' "${gh_log}")" -eq 1 ]] ||
-  fail 'GHA timeout=0 performed more than one run-list poll'
+chmod +x "${fake_bin}/curl"
 
 curl_log="${test_root}/curl.log"
 : > "${curl_log}"
@@ -284,7 +195,7 @@ assert_contains "${output}" 'simulated curl failure'
 # installed tree.
 disposable_skill="${test_root}/disposable-skill/ci"
 mkdir -p "${disposable_skill}"
-cp -R "${repo_root}/skills/ci-operations/scripts" "${disposable_skill}/"
+cp -R "${repo_root}/skills/circleci/scripts" "${disposable_skill}/"
 printf 'CIRCLECI_TOKEN=from-skill-root\n' > "${disposable_skill}/.env"
 disposable_circle="${disposable_skill}/scripts/circleci.sh"
 
@@ -310,26 +221,26 @@ assert_contains "$(resolved_token "${disposable_circle}")" 'Circle-Token: from-s
 
 # A repository profile directory owns settings outright. An empty one must not
 # fall back to the skill's token; that fallback is the leak being prevented.
-mkdir -p "${profile_repo}/.agents/skills/ci-operations"
+mkdir -p "${profile_repo}/.agents/skills/circleci"
 expect_failure "CIRCLECI_TOKEN is unset" \
   env -C "${profile_repo}" "${disposable_circle}" list --project gh/owner/repo
 output="$(cd "${profile_repo}" && "${disposable_circle}" list --project gh/owner/repo 2>&1)" || true
-assert_contains "${output}" "${profile_repo}/.agents/skills/ci-operations/.env"
+assert_contains "${output}" "${profile_repo}/.agents/skills/circleci/.env"
 assert_not_contains "${output}" "to ${disposable_skill}/.env"
 
 # A token in the repository profile wins over the skill's own.
-printf 'CIRCLECI_TOKEN=from-agents-profile\n' > "${profile_repo}/.agents/skills/ci-operations/.env"
+printf 'CIRCLECI_TOKEN=from-agents-profile\n' > "${profile_repo}/.agents/skills/circleci/.env"
 assert_contains "$(resolved_token "${disposable_circle}")" 'Circle-Token: from-agents-profile'
 
 # The .claude profile applies when .agents is absent.
 rm -rf "${profile_repo}/.agents"
-mkdir -p "${profile_repo}/.claude/skills/ci-operations"
-printf 'CIRCLECI_TOKEN=from-claude-profile\n' > "${profile_repo}/.claude/skills/ci-operations/.env"
+mkdir -p "${profile_repo}/.claude/skills/circleci"
+printf 'CIRCLECI_TOKEN=from-claude-profile\n' > "${profile_repo}/.claude/skills/circleci/.env"
 assert_contains "$(resolved_token "${disposable_circle}")" 'Circle-Token: from-claude-profile'
 
 # .agents wins over .claude when both exist.
-mkdir -p "${profile_repo}/.agents/skills/ci-operations"
-printf 'CIRCLECI_TOKEN=from-agents-profile\n' > "${profile_repo}/.agents/skills/ci-operations/.env"
+mkdir -p "${profile_repo}/.agents/skills/circleci"
+printf 'CIRCLECI_TOKEN=from-agents-profile\n' > "${profile_repo}/.agents/skills/circleci/.env"
 assert_contains "$(resolved_token "${disposable_circle}")" 'Circle-Token: from-agents-profile'
 
 # Explicit overrides beat discovery.
@@ -337,11 +248,11 @@ explicit_profile="${test_root}/explicit-profile"
 mkdir -p "${explicit_profile}"
 printf 'CIRCLECI_TOKEN=from-explicit-profile\n' > "${explicit_profile}/.env"
 assert_contains \
-  "$(CI_PROFILE_DIR="${explicit_profile}" resolved_token "${disposable_circle}")" \
+  "$(CIRCLECI_PROFILE_DIR="${explicit_profile}" resolved_token "${disposable_circle}")" \
   'Circle-Token: from-explicit-profile'
 printf 'CIRCLECI_TOKEN=from-explicit-file\n' > "${test_root}/explicit.env"
 assert_contains \
-  "$(CI_ENV_FILE="${test_root}/explicit.env" resolved_token "${disposable_circle}")" \
+  "$(CIRCLECI_ENV_FILE="${test_root}/explicit.env" resolved_token "${disposable_circle}")" \
   'Circle-Token: from-explicit-file'
 
 # An exported token still outranks every file.
@@ -349,4 +260,4 @@ assert_contains \
   "$(CIRCLECI_TOKEN=from-environment resolved_token "${disposable_circle}")" \
   'Circle-Token: from-environment'
 
-printf 'ci_operations_test: passed\n'
+printf 'circleci_test: passed\n'

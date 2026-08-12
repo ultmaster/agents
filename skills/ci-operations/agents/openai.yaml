@@ -1,4 +1,0 @@
-interface:
-  display_name: "CI Operations"
-  short_description: "Reproduce, run, and triage CI safely"
-  default_prompt: "Use $ci-operations to reproduce and triage the failing CI checks for this repository."

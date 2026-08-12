@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Actions"
+  short_description: "Reproduce and triage workflow runs safely"
+  default_prompt: "Use $github-actions to reproduce and triage the failing workflow run for this repository."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "CircleCI"
+  short_description: "Reproduce, trigger, and triage pipelines"
+  default_prompt: "Use $circleci to reproduce and triage the failing pipeline for this repository."

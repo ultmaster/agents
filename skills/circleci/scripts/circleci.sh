@@ -17,14 +17,14 @@ readonly skill_root
 # Bundled resources stay skill-root-relative; only local settings resolve here.
 resolve_profile_dir() {
   local repo_root candidate
-  if [[ -n "${CI_PROFILE_DIR:-}" ]]; then
-    printf '%s\n' "${CI_PROFILE_DIR}"
+  if [[ -n "${CIRCLECI_PROFILE_DIR:-}" ]]; then
+    printf '%s\n' "${CIRCLECI_PROFILE_DIR}"
     return 0
   fi
   if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     for candidate in \
-      "${repo_root}/.agents/skills/ci-operations" \
-      "${repo_root}/.claude/skills/ci-operations"; do
+      "${repo_root}/.agents/skills/circleci" \
+      "${repo_root}/.claude/skills/circleci"; do
       if [[ -d "${candidate}" ]]; then
         printf '%s\n' "${candidate}"
         return 0
@@ -36,7 +36,7 @@ resolve_profile_dir() {
 
 profile_dir="$(resolve_profile_dir)"
 readonly profile_dir
-env_file="${CI_ENV_FILE:-${profile_dir}/.env}"
+env_file="${CIRCLECI_ENV_FILE:-${profile_dir}/.env}"
 readonly env_file
 
 readonly CIRCLE_API_DEFAULT="https://circleci.com/api/v2"
@@ -89,16 +89,16 @@ tests selectors:
 Environment overrides:
   CIRCLECI_TOKEN, CIRCLECI_PROJECT_SLUG, CIRCLECI_PROJECT_V1,
   CI_REMOTE, CI_BRANCH, CIRCLECI_API, CIRCLECI_API_V1,
-  CI_PROFILE_DIR, CI_ENV_FILE
+  CIRCLECI_PROFILE_DIR, CIRCLECI_ENV_FILE
 
 Local settings come from the repository's own profile directory when it has
 one, so a project's credentials never leak into unrelated repositories. The
 profile directory is the first of:
-  $CI_PROFILE_DIR
-  <repository-root>/.agents/skills/ci-operations
-  <repository-root>/.claude/skills/ci-operations
+  $CIRCLECI_PROFILE_DIR
+  <repository-root>/.agents/skills/circleci
+  <repository-root>/.claude/skills/circleci
   <skill-root>
-Settings load from <profile-directory>/.env, or from $CI_ENV_FILE when set.
+Settings load from <profile-directory>/.env, or from $CIRCLECI_ENV_FILE when set.
 
 Examples:
   circleci.sh trigger --branch feature/name --parameter smoke=true --dry-run
@@ -193,7 +193,7 @@ load_env_file() {
 
 require_token() {
   [[ -n "${CIRCLECI_TOKEN:-}" ]] ||
-    die "CIRCLECI_TOKEN is unset; export it, point CI_ENV_FILE at a settings file, or copy ${skill_root}/.env.example to ${env_file} and fill it in"
+    die "CIRCLECI_TOKEN is unset; export it, point CIRCLECI_ENV_FILE at a settings file, or copy ${skill_root}/.env.example to ${env_file} and fill it in"
 }
 
 # Feed the credential as a header on stdin so it never appears in curl's argv.
