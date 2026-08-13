@@ -8,21 +8,22 @@ usage() {
   cat <<'EOF'
 Usage: setup.sh [--dry-run] [--prune | --uninstall] [--target-home DIRECTORY]
 
-Install this repository's rules and skills into the current user's Codex and
-Claude configuration directories. Existing non-matching paths are never
-overwritten. --target-home installs into an alternate home-shaped directory and
-is useful for validation.
+Install this repository's rules, skills, and subagents into the current user's
+Codex and Claude configuration directories. Existing non-matching paths are
+never overwritten. --target-home installs into an alternate home-shaped
+directory and is useful for validation.
 
 Each install records the links it created in a manifest inside the agents
 directory. A later run reads that manifest, so it still recognizes its own
 links after this checkout is renamed or moved. A link this installer did not
 create is never touched, however broken it looks.
 
-Renaming a skill, removing one, or moving this checkout leaves a link whose
-source no longer exists. Those stale links are always reported. --prune removes
-them, and only them: a link is pruned only when the manifest records it or it
-points into this repository's skills directory, and its target is gone. A stale
-link occupying a path this run wants blocks the install until --prune is given.
+Renaming a skill or subagent, removing one, or moving this checkout leaves a
+link whose source no longer exists. Those stale links are always reported.
+--prune removes them, and only them: a link is pruned only when the manifest
+records it or it points into this repository's skills or subagents directory,
+and its target is gone. A stale link occupying a path this run wants blocks the
+install until --prune is given.
 
 --uninstall removes every link this installer owns and then the manifest,
 leaving directories and unrelated links in place. Run it before deleting this
@@ -34,9 +35,10 @@ Environment (ignored when --target-home is given):
   CLAUDE_CONFIG_DIR  Claude configuration directory (default ~/.claude)
   AGENTS_HOME        Shared agents directory holding skills (default ~/.agents)
 
-CODEX_HOME moves only the Codex rules file. Skills install under AGENTS_HOME
-because ~/.agents/skills is a shared discovery path rather than Codex state,
-and ~/.codex/skills is never written to at all.
+CODEX_HOME moves the Codex rules file and the Codex subagent definitions, which
+Codex discovers only under its own configuration directory. Skills install under
+AGENTS_HOME because ~/.agents/skills is a shared discovery path rather than
+Codex state, and ~/.codex/skills is never written to at all.
 EOF
 }
 
@@ -74,6 +76,7 @@ fi
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 rules_source="${repo_root}/RULES.md"
 skills_source="${repo_root}/skills"
+subagents_source="${repo_root}/subagents"
 if "$target_home_set"; then
   user_home=$target_home
   codex_root="${user_home}/.codex"
@@ -87,6 +90,8 @@ else
 fi
 codex_skills_root="${agents_root}/skills"
 claude_skills_root="${claude_root}/skills"
+codex_agents_root="${codex_root}/agents"
+claude_agents_root="${claude_root}/agents"
 manifest_file="${agents_root}/setup-manifest"
 
 for absolute_path in "$user_home" "$codex_root" "$claude_root" "$agents_root"; do
@@ -114,6 +119,8 @@ declare -a required_directories=(
   "$agents_root"
   "$codex_skills_root"
   "$claude_skills_root"
+  "$codex_agents_root"
+  "$claude_agents_root"
 )
 declare -a link_sources=("$rules_source" "$rules_source")
 declare -a link_targets=(
@@ -136,6 +143,22 @@ done
 if ! "$uninstall"; then
   ((skill_count > 0)) || die "no valid skills found under ${skills_source}"
 fi
+
+# A subagent directory owns one logical role in each harness's native format.
+# Each definition is linked on its own, so a role defined for one harness only
+# installs there rather than blocking the other.
+for subagent_source in "${subagents_source}"/*; do
+  [[ -d "$subagent_source" ]] || continue
+  subagent_name=${subagent_source##*/}
+  if [[ -f "${subagent_source}/${subagent_name}.md" ]]; then
+    link_sources+=("${subagent_source}/${subagent_name}.md")
+    link_targets+=("${claude_agents_root}/${subagent_name}.md")
+  fi
+  if [[ -f "${subagent_source}/${subagent_name}.toml" ]]; then
+    link_sources+=("${subagent_source}/${subagent_name}.toml")
+    link_targets+=("${codex_agents_root}/${subagent_name}.toml")
+  fi
+done
 
 # The manifest is how a later run recognizes its own links after this checkout
 # moves: the link value no longer points anywhere, and without a record there
@@ -160,6 +183,7 @@ fi
 link_is_owned() {
   local link_path=$1 link_value=$2
   [[ "$link_value" == "${skills_source}/"* ]] && return 0
+  [[ "$link_value" == "${subagents_source}/"* ]] && return 0
   [[ -n "${manifest_source["$link_path"]-}" && "${manifest_source["$link_path"]}" == "$link_value" ]] && return 0
   return 1
 }
@@ -203,12 +227,14 @@ for index in "${!link_sources[@]}"; do
   fi
 done
 
-# A renamed or removed skill leaves behind a link whose source no longer exists.
-# Only a link this installer owns is eligible: a link to any other source
-# belongs to the user, however broken it looks.
-for skills_root in "$codex_skills_root" "$claude_skills_root"; do
-  [[ -d "$skills_root" && ! -L "$skills_root" ]] || continue
-  for existing_link in "$skills_root"/*; do
+# A renamed or removed skill or subagent leaves behind a link whose source no
+# longer exists. Only a link this installer owns is eligible: a link to any
+# other source belongs to the user, however broken it looks.
+for discovery_root in \
+  "$codex_skills_root" "$claude_skills_root" \
+  "$codex_agents_root" "$claude_agents_root"; do
+  [[ -d "$discovery_root" && ! -L "$discovery_root" ]] || continue
+  for existing_link in "$discovery_root"/*; do
     [[ -L "$existing_link" ]] || continue
     [[ -e "$existing_link" ]] && continue
     link_target=$(readlink "$existing_link")

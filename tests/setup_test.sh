@@ -11,10 +11,19 @@ real_mkdir=$(command -v mkdir)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/agents-setup-test.XXXXXX")
 
 declare -a skill_names=()
+declare -a subagent_names=()
 shopt -s nullglob
 for skill_dir in "${repo_root}"/skills/*; do
   if [[ -d "$skill_dir" && -f "${skill_dir}/SKILL.md" ]]; then
     skill_names+=("${skill_dir##*/}")
+  fi
+done
+for subagent_dir in "${repo_root}"/subagents/*; do
+  subagent_name=${subagent_dir##*/}
+  if [[ -d "$subagent_dir" \
+    && -f "${subagent_dir}/${subagent_name}.md" \
+    && -f "${subagent_dir}/${subagent_name}.toml" ]]; then
+    subagent_names+=("$subagent_name")
   fi
 done
 shopt -u nullglob
@@ -116,14 +125,14 @@ new_case_root() {
 }
 
 current_link_count() {
-  printf '%s\n' "$((2 + 2 * ${#skill_names[@]}))"
+  printf '%s\n' "$((2 + 2 * ${#skill_names[@]} + 2 * ${#subagent_names[@]}))"
 }
 
 assert_current_install() {
   local home=$1
   local codex_root=$2
   local claude_root=$3
-  local skill_name
+  local skill_name subagent_name
 
   assert_link_target "${codex_root}/AGENTS.md" "${repo_root}/RULES.md"
   assert_link_target "${claude_root}/CLAUDE.md" "${repo_root}/RULES.md"
@@ -134,6 +143,16 @@ assert_current_install() {
     assert_link_target \
       "${claude_root}/skills/${skill_name}" \
       "${repo_root}/skills/${skill_name}"
+  done
+  # Subagent definitions are linked file by file into each client's own agents
+  # directory, in that client's native format.
+  for subagent_name in "${subagent_names[@]}"; do
+    assert_link_target \
+      "${codex_root}/agents/${subagent_name}.toml" \
+      "${repo_root}/subagents/${subagent_name}/${subagent_name}.toml"
+    assert_link_target \
+      "${claude_root}/agents/${subagent_name}.md" \
+      "${repo_root}/subagents/${subagent_name}/${subagent_name}.md"
   done
 }
 
@@ -147,11 +166,19 @@ snapshot_tree() {
 
 make_fixture_source() {
   local fixture_root=$1
-  mkdir -p -- "${fixture_root}/skills/fixture-skill" || return 1
+  mkdir -p -- \
+    "${fixture_root}/skills/fixture-skill" \
+    "${fixture_root}/subagents/fixture-agent" \
+    || return 1
   cp -- "$setup_script" "${fixture_root}/setup.sh" || return 1
   cp -- "${repo_root}/RULES.md" "${fixture_root}/RULES.md" || return 1
   printf '%s\n' '---' 'name: fixture-skill' 'description: Fixture.' '---' \
     >"${fixture_root}/skills/fixture-skill/SKILL.md" || return 1
+  printf '%s\n' '---' 'name: fixture-agent' 'description: Fixture.' '---' 'Body.' \
+    >"${fixture_root}/subagents/fixture-agent/fixture-agent.md" || return 1
+  printf '%s\n' 'name = "fixture-agent"' 'description = "Fixture."' \
+    'developer_instructions = "Body."' \
+    >"${fixture_root}/subagents/fixture-agent/fixture-agent.toml" || return 1
 }
 
 write_mkdir_race_wrapper() {
@@ -275,7 +302,7 @@ test_exact_first_install() {
   actual_count=$(find "$target_home" -type l -print | awk 'END { print NR + 0 }')
   assert_eq "$expected_count" "$actual_count" 'installed link count'
   directory_count=$(find "$target_home" -mindepth 1 -type d -print | awk 'END { print NR + 0 }')
-  assert_eq 5 "$directory_count" 'created directory count'
+  assert_eq 7 "$directory_count" 'created directory count'
   file_count=$(find "$target_home" -type f -print | awk 'END { print NR + 0 }')
   assert_eq 1 "$file_count" 'created regular file count'
   assert_absent "${target_home}/.codex/skills"
@@ -371,23 +398,64 @@ test_preserves_unrelated_skills_and_codex_skills() {
   assert_file_text "${target_home}/.codex/skills/bundled-skill/owner.txt" 'managed elsewhere'
 }
 
-test_reports_and_prunes_only_this_repository_stale_links() {
-  local case_root target_home renamed_link foreign_link
+test_preserves_unrelated_subagents() {
+  local case_root target_home subagent_name
   case_root=$(new_case_root) || fail "could not create case root"
   target_home="${case_root}/home"
-  mkdir -p -- "${target_home}/.agents/skills" "${target_home}/.claude/skills" \
-    || fail "could not seed skill roots"
+  subagent_name=${subagent_names[0]}
+  mkdir -p -- "${target_home}/.codex/agents" "${target_home}/.claude/agents" \
+    || fail "could not seed agent directories"
+  # A user's own definitions, in the same directories this install writes into.
+  printf 'user codex agent\n' >"${target_home}/.codex/agents/personal.toml"
+  printf 'user claude agent\n' >"${target_home}/.claude/agents/personal.md"
+
+  capture "$setup_script" --target-home "$target_home"
+  assert_status 0
+  assert_current_install "$target_home" "${target_home}/.codex" "${target_home}/.claude"
+  assert_file_text "${target_home}/.codex/agents/personal.toml" 'user codex agent'
+  assert_file_text "${target_home}/.claude/agents/personal.md" 'user claude agent'
+
+  # A user file occupying a path this install wants is a conflict, not a target.
+  rm -- "${target_home}/.claude/agents/${subagent_name}.md" \
+    || fail "could not remove an installed subagent link"
+  printf 'user copy\n' >"${target_home}/.claude/agents/${subagent_name}.md"
+  capture "$setup_script" --target-home "$target_home"
+  assert_status 1
+  assert_output_contains \
+    "path already exists and is not this setup link: ${target_home}/.claude/agents/${subagent_name}.md"
+  assert_file_text "${target_home}/.claude/agents/${subagent_name}.md" 'user copy'
+}
+
+test_reports_and_prunes_only_this_repository_stale_links() {
+  local case_root target_home renamed_link renamed_agent_link foreign_link foreign_agent_link
+  case_root=$(new_case_root) || fail "could not create case root"
+  target_home="${case_root}/home"
+  mkdir -p -- \
+    "${target_home}/.agents/skills" \
+    "${target_home}/.claude/skills" \
+    "${target_home}/.codex/agents" \
+    "${target_home}/.claude/agents" \
+    || fail "could not seed discovery roots"
 
   # A skill that this repository renamed away: the link still points into the
   # repository's skills directory, but that source is gone.
   renamed_link="${target_home}/.agents/skills/removed-skill"
   ln -s -- "${repo_root}/skills/removed-skill" "$renamed_link" \
     || fail "could not seed a stale link"
-  # A broken link owned by the user. It must survive every run: it points
-  # somewhere this installer does not manage, however dangling it looks.
+  # The same story for a renamed subagent definition.
+  renamed_agent_link="${target_home}/.codex/agents/removed-agent.toml"
+  ln -s -- \
+    "${repo_root}/subagents/removed-agent/removed-agent.toml" \
+    "$renamed_agent_link" \
+    || fail "could not seed a stale subagent link"
+  # Broken links owned by the user. They must survive every run: they point
+  # somewhere this installer does not manage, however dangling they look.
   foreign_link="${target_home}/.claude/skills/foreign-skill"
   ln -s -- "${case_root}/somewhere-else/foreign-skill" "$foreign_link" \
     || fail "could not seed a foreign dangling link"
+  foreign_agent_link="${target_home}/.claude/agents/foreign-agent.md"
+  ln -s -- "${case_root}/somewhere-else/foreign-agent.md" "$foreign_agent_link" \
+    || fail "could not seed a foreign dangling subagent link"
 
   # Reported, never removed, and the install still completes.
   capture "$setup_script" --target-home "$target_home"
@@ -395,27 +463,34 @@ test_reports_and_prunes_only_this_repository_stale_links() {
   assert_output_contains 'stale link'
   assert_output_contains 'rerun with --prune to remove'
   assert_link_target "$renamed_link" "${repo_root}/skills/removed-skill"
+  assert_link_target \
+    "$renamed_agent_link" "${repo_root}/subagents/removed-agent/removed-agent.toml"
   assert_current_install "$target_home" "${target_home}/.codex" "${target_home}/.claude"
 
   # --dry-run --prune previews without touching anything.
   capture "$setup_script" --target-home "$target_home" --prune --dry-run
   assert_status 0
   assert_output_contains "would prune ${renamed_link}"
+  assert_output_contains "would prune ${renamed_agent_link}"
   assert_link_target "$renamed_link" "${repo_root}/skills/removed-skill"
 
-  # --prune removes the repository's own stale link and reports it.
+  # --prune removes the repository's own stale links and reports them.
   capture "$setup_script" --target-home "$target_home" --prune
   assert_status 0
   assert_output_contains "pruned ${renamed_link}"
+  assert_output_contains "pruned ${renamed_agent_link}"
   assert_absent "$renamed_link"
+  assert_absent "$renamed_agent_link"
   assert_current_install "$target_home" "${target_home}/.codex" "${target_home}/.claude"
 
-  # The user's dangling link is never reported and never removed.
+  # The user's dangling links are never reported and never removed.
   assert_link_target "$foreign_link" "${case_root}/somewhere-else/foreign-skill"
+  assert_link_target "$foreign_agent_link" "${case_root}/somewhere-else/foreign-agent.md"
   capture "$setup_script" --target-home "$target_home" --prune
   assert_status 0
   assert_link_target "$foreign_link" "${case_root}/somewhere-else/foreign-skill"
-  if [[ "$RUN_OUTPUT" == *foreign-skill* ]]; then
+  assert_link_target "$foreign_agent_link" "${case_root}/somewhere-else/foreign-agent.md"
+  if [[ "$RUN_OUTPUT" == *foreign-skill* || "$RUN_OUTPUT" == *foreign-agent* ]]; then
     fail "a link outside this repository was treated as stale: ${RUN_OUTPUT}"
   fi
 }
@@ -432,6 +507,9 @@ test_relinks_after_the_checkout_moves() {
   assert_status 0
   assert_link_target \
     "${target_home}/.claude/skills/fixture-skill" "${origin}/skills/fixture-skill"
+  assert_link_target \
+    "${target_home}/.claude/agents/fixture-agent.md" \
+    "${origin}/subagents/fixture-agent/fixture-agent.md"
   assert_regular_file "${target_home}/.agents/setup-manifest"
 
   mv -- "$origin" "$moved" || fail "could not move the checkout"
@@ -449,6 +527,7 @@ test_relinks_after_the_checkout_moves() {
   capture "${moved}/setup.sh" --target-home "$target_home" --prune --dry-run
   assert_status 0
   assert_output_contains "would prune ${target_home}/.claude/skills/fixture-skill"
+  assert_output_contains "would prune ${target_home}/.codex/agents/fixture-agent.toml"
   assert_output_contains \
     "would link ${target_home}/.claude/skills/fixture-skill -> ${moved}/skills/fixture-skill"
   assert_link_target \
@@ -462,13 +541,19 @@ test_relinks_after_the_checkout_moves() {
     "${target_home}/.agents/skills/fixture-skill" "${moved}/skills/fixture-skill"
   assert_link_target \
     "${target_home}/.claude/skills/fixture-skill" "${moved}/skills/fixture-skill"
+  assert_link_target \
+    "${target_home}/.codex/agents/fixture-agent.toml" \
+    "${moved}/subagents/fixture-agent/fixture-agent.toml"
+  assert_link_target \
+    "${target_home}/.claude/agents/fixture-agent.md" \
+    "${moved}/subagents/fixture-agent/fixture-agent.md"
   link_count=$(find "$target_home" -type l -print | awk 'END { print NR + 0 }')
-  assert_eq 4 "$link_count" 'links after relocation'
+  assert_eq 6 "$link_count" 'links after relocation'
 
   # The rewritten manifest describes the new location, so the next run is clean.
   capture "${moved}/setup.sh" --target-home "$target_home"
   assert_status 0
-  assert_output_prefix_count 4 'already linked '
+  assert_output_prefix_count 6 'already linked '
 }
 
 test_uninstall_removes_only_installed_links() {
@@ -478,9 +563,12 @@ test_uninstall_removes_only_installed_links() {
   target_home="${case_root}/home"
   foreign_link="${target_home}/.agents/skills/foreign-skill"
   make_fixture_source "$fixture_root" || fail "could not create source fixture"
-  mkdir -p -- "${target_home}/.claude/skills/external-skill" \
-    || fail "could not seed an unrelated skill"
+  mkdir -p -- \
+    "${target_home}/.claude/skills/external-skill" \
+    "${target_home}/.claude/agents" \
+    || fail "could not seed unrelated user definitions"
   printf 'external\n' >"${target_home}/.claude/skills/external-skill/owner.txt"
+  printf 'external agent\n' >"${target_home}/.claude/agents/external-agent.md"
 
   capture "${fixture_root}/setup.sh" --target-home "$target_home"
   assert_status 0
@@ -489,24 +577,30 @@ test_uninstall_removes_only_installed_links() {
 
   capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall --dry-run
   assert_status 0
-  assert_output_contains 'would uninstall 4 link(s)'
+  assert_output_contains 'would uninstall 6 link(s)'
   assert_output_contains "would remove ${target_home}/.agents/setup-manifest"
   assert_link_target "${target_home}/.claude/CLAUDE.md" "${fixture_root}/RULES.md"
   assert_regular_file "${target_home}/.agents/setup-manifest"
 
   capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall
   assert_status 0
-  assert_output_contains 'uninstalled 4 link(s)'
+  assert_output_contains 'uninstalled 6 link(s)'
   assert_absent "${target_home}/.codex/AGENTS.md"
   assert_absent "${target_home}/.claude/CLAUDE.md"
   assert_absent "${target_home}/.agents/skills/fixture-skill"
   assert_absent "${target_home}/.claude/skills/fixture-skill"
+  assert_absent "${target_home}/.codex/agents/fixture-agent.toml"
+  assert_absent "${target_home}/.claude/agents/fixture-agent.md"
   assert_absent "${target_home}/.agents/setup-manifest"
 
-  # Directories, unrelated skills, and links to other sources all survive.
+  # Directories, unrelated skills, unrelated subagents, and links to other
+  # sources all survive.
   assert_directory "${target_home}/.agents/skills"
   assert_directory "${target_home}/.claude/skills"
+  assert_directory "${target_home}/.codex/agents"
+  assert_directory "${target_home}/.claude/agents"
   assert_file_text "${target_home}/.claude/skills/external-skill/owner.txt" 'external'
+  assert_file_text "${target_home}/.claude/agents/external-agent.md" 'external agent'
   assert_link_target "$foreign_link" "${case_root}/nowhere/foreign-skill"
 
   capture "${fixture_root}/setup.sh" --target-home "$target_home" --uninstall
@@ -515,13 +609,14 @@ test_uninstall_removes_only_installed_links() {
 }
 
 test_agents_home_routing() {
-  local case_root home codex_root claude_root agents_home skill_name
+  local case_root home codex_root claude_root agents_home skill_name subagent_name
   case_root=$(new_case_root) || fail "could not create case root"
   home="${case_root}/home"
   codex_root="${case_root}/codex-config"
   claude_root="${case_root}/claude-config"
   agents_home="${case_root}/agents-config"
   skill_name=${skill_names[0]}
+  subagent_name=${subagent_names[0]}
   mkdir -p -- "$home" || fail "could not create home"
 
   capture env \
@@ -537,9 +632,17 @@ test_agents_home_routing() {
     "${agents_home}/skills/${skill_name}" "${repo_root}/skills/${skill_name}"
   assert_link_target \
     "${claude_root}/skills/${skill_name}" "${repo_root}/skills/${skill_name}"
+  # Subagents follow each client's own configuration directory, not AGENTS_HOME.
+  assert_link_target \
+    "${codex_root}/agents/${subagent_name}.toml" \
+    "${repo_root}/subagents/${subagent_name}/${subagent_name}.toml"
+  assert_link_target \
+    "${claude_root}/agents/${subagent_name}.md" \
+    "${repo_root}/subagents/${subagent_name}/${subagent_name}.md"
   assert_regular_file "${agents_home}/setup-manifest"
   assert_absent "${home}/.agents"
   assert_absent "${codex_root}/skills"
+  assert_absent "${agents_home}/agents"
 }
 
 test_rejects_a_manifest_path_it_does_not_own() {
@@ -646,6 +749,8 @@ test_discovers_sources_from_installer_directory() {
   mkdir -p -- \
     "${fixture_root}/skills/valid-skill" \
     "${fixture_root}/skills/no-manifest" \
+    "${fixture_root}/subagents/claude-only" \
+    "${fixture_root}/subagents/misnamed" \
     "$work_dir" \
     || fail "could not create source fixture"
   cp -- "$setup_script" "${fixture_root}/setup.sh" || fail "could not copy setup script"
@@ -654,6 +759,11 @@ test_discovers_sources_from_installer_directory() {
     >"${fixture_root}/skills/valid-skill/SKILL.md"
   printf 'ignored\n' >"${fixture_root}/skills/no-manifest/note.txt"
   printf 'ignored\n' >"${fixture_root}/skills/not-a-directory"
+  # A role defined for one harness installs there and does not block the other.
+  printf '%s\n' '---' 'name: claude-only' 'description: Fixture.' '---' 'Body.' \
+    >"${fixture_root}/subagents/claude-only/claude-only.md"
+  # A definition whose filename disagrees with its directory is not a definition.
+  printf 'name = "misnamed"\n' >"${fixture_root}/subagents/misnamed/other-name.toml"
 
   RUN_OUTPUT=$(cd -- "$work_dir" && "${fixture_root}/setup.sh" --target-home "$target_home" 2>&1)
   RUN_STATUS=$?
@@ -666,11 +776,18 @@ test_discovers_sources_from_installer_directory() {
   assert_link_target \
     "${target_home}/.claude/skills/valid-skill" \
     "${fixture_root}/skills/valid-skill"
+  assert_link_target \
+    "${target_home}/.claude/agents/claude-only.md" \
+    "${fixture_root}/subagents/claude-only/claude-only.md"
   assert_absent "${target_home}/.agents/skills/no-manifest"
   assert_absent "${target_home}/.claude/skills/no-manifest"
   assert_absent "${target_home}/.agents/skills/not-a-directory"
+  assert_absent "${target_home}/.codex/agents/claude-only.toml"
+  assert_absent "${target_home}/.codex/agents/misnamed.toml"
+  assert_absent "${target_home}/.codex/agents/other-name.toml"
+  assert_absent "${target_home}/.claude/agents/misnamed.md"
   link_count=$(find "$target_home" -type l -print | awk 'END { print NR + 0 }')
-  assert_eq 4 "$link_count" 'fixture link count'
+  assert_eq 5 "$link_count" 'fixture link count'
 }
 
 test_rejects_source_without_valid_skills() {
@@ -753,6 +870,9 @@ record_result() {
 if ((${#skill_names[@]} == 0)); then
   fail "no current skills discovered under ${repo_root}/skills"
 fi
+if ((${#subagent_names[@]} == 0)); then
+  fail "no current subagents discovered under ${repo_root}/subagents"
+fi
 if [[ ! -x "$setup_script" ]]; then
   fail "setup script is not executable: ${setup_script}"
 fi
@@ -787,6 +907,10 @@ record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='preserves unrelated skills and codex skills'
 (test_preserves_unrelated_skills_and_codex_skills)
+record_result "$CURRENT_TEST" "$?"
+
+CURRENT_TEST='preserves unrelated subagents'
+(test_preserves_unrelated_subagents)
 record_result "$CURRENT_TEST" "$?"
 
 CURRENT_TEST='reports and prunes only this repository stale links'

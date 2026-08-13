@@ -92,15 +92,18 @@ Saving a screenshot without looking at it is not verification — and loading a
 batch of images into the working context crowds out the code being changed. So
 delegate the looking rather than skipping it:
 
-- Give a subagent the image paths, the route/viewport/state behind each, the
-  approved sketch when one exists, and `references/screenshot-review.md` from
-  this skill directory.
+- Prefer the `ui-screenshot-reviewer` subagent, which carries the review
+  criteria. Any subagent works otherwise; tell it what to look for.
+- Give it the image paths, the route/viewport/state behind each, and the
+  approved sketch when one exists.
 - Ask for findings as text: what is wrong, in which image, where in the frame,
   which rule or token it violates, and how severe it is.
 - Ask it to review, not to fix. Keep related screenshots in one pass so findings
   can be compared across states and viewports.
 - If the harness offers no subagent, inspect the images yourself in one focused
-  pass and write the findings down before returning to implementation.
+  pass — layout, spacing, typography, color and contrast, theme, component
+  fidelity, states, responsiveness, content, and rendering artifacts — and write
+  the findings down before returning to implementation.
 
 Then act on the report: fix real defects, and state which findings you are
 leaving and why. A finding list is not automatically a work list — pre-existing

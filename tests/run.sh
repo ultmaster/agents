@@ -26,6 +26,9 @@ mapfile -d '' shell_scripts < <(
 printf '==> skill metadata\n'
 python3 tests/validate_skills.py
 
+printf '==> subagent definitions\n'
+python3 tests/validate_subagents.py
+
 printf '==> shell syntax\n'
 bash -n "${shell_scripts[@]}"
 
