@@ -11,8 +11,8 @@ description: Operate and diagnose GitHub Actions safely in any repository. Use w
    `git rev-parse --show-toplevel`.
 2. Prefer the repository's own CI skill when it has one. A project that
    documents its workflows, job layout, and helper commands in its own skill
-   knows things this one cannot; follow it for what to run and where. This skill
-   still owns the safety rules below.
+   knows things this one cannot; follow it for what to run and where. Keep
+   following the safety rules below.
 3. Confirm the provider from local configuration: `.github/workflows/*.yml` or
    `*.yaml`. A repository may run a different provider instead or as well.
 4. Read the relevant workflow before acting. Copy its command, working directory,

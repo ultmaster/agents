@@ -36,6 +36,23 @@ is not this repository's maintenance guide.
 - Preserve imported material unchanged in its import commit; make portability
   edits in a later commit so provenance remains reviewable.
 
+## Write artifacts to be used, not explained
+
+`RULES.md`, every `SKILL.md`, and every subagent definition is loaded by an
+agent partway through someone else's task. Write them as instructions to follow
+there.
+
+- Leave out everything about the artifact itself: its scope, what belongs in it,
+  how to write or maintain one, or a summary of its own purpose. That guidance
+  belongs in `AGENTS.md`, where whoever changes the artifact will look for it.
+  In the artifact it instructs nothing and displaces the part that does.
+- A skill's trigger conditions are its frontmatter `description`, which is the
+  routing contract both harnesses match against. Do not restate them in the body.
+- When the boundary between two instruction sources genuinely changes what to
+  do, write the behavior rather than the boundary. "Prefer the project's own CI
+  skill for what to run; keep following the safety rules below" is an
+  instruction. "This skill owns the safety rules" describes a document.
+
 ## Change skills safely
 
 - Follow the active harness's skill-creation guidance when adding or changing a

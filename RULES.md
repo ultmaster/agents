@@ -1,11 +1,9 @@
 # Personal Agent Instructions
 
-Portable preferences for work across unrelated repositories and agent harnesses.
-Anything specific to one project — its commands, layout, branches, and
-conventions — belongs to that project's own instructions and wins there.
-
 ## Working style
 
+- Follow the project's own instructions wherever they differ from these. A
+  project owns its commands, layout, branches, and conventions.
 - Treat the named task, phase, or pull request as a scope boundary. Do not fold
   in adjacent fixes, refactors, or documents; ask before expanding the scope.
 - Prefer the smallest coherent design with one clear owner for each behavior.
@@ -38,8 +36,8 @@ conventions — belongs to that project's own instructions and wins there.
 ## Skills and private state
 
 - When a repository has its own skill covering the same ground, prefer it for
-  that project's commands, layout, and conventions. The personal skill still
-  owns the portable safety rules.
+  that project's commands, layout, and conventions, and keep following the
+  portable safety rules alongside it.
 - Never commit credentials, caches, raw transcripts, or other private runtime
   state.
 - When changing the personal agent library itself, follow that repository's
