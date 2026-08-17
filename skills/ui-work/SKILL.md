@@ -1,6 +1,6 @@
 ---
 name: ui-work
-description: Design, implement, and verify visual UI changes in any repository. Use for new or redesigned components, screens, dialogs, panels, navigation, responsive or empty/error/loading states, interactions, and visual bug fixes, and whenever asked to verify, QA, or provide proof for how something renders - including backend changes that affect the UI. Sketch with the project's own design tooling and get approval when a real visual choice exists, implement from the approved sketch, then prove the result in the running application with inspected screenshots. Tests alone are never visual proof.
+description: Design, implement, and verify visual UI changes in any repository. Use for new or redesigned components, screens, dialogs, panels, navigation, responsive or empty/error/loading states, interactions, and visual bug fixes, and whenever asked to verify, QA, or provide proof for how something renders - including backend changes that affect the UI. Sketch in whatever design surface the project uses, or start from an approved design when one already exists, and get approval while a real visual choice remains; implement from the approved design, then prove the result in the running application with inspected screenshots. Tests alone are never visual proof.
 ---
 
 # UI Work
@@ -17,7 +17,9 @@ which and why rather than pretending the loop ran.
 
 Inspect local instructions and the codebase for:
 
-- the canonical design file or other approved visual source;
+- where approved designs live and in what form — a design tool, a hosted
+  design-system project, a spec, or reference renders — and whether that source
+  is authored by hand or generated from the code library;
 - component libraries, stories, screenshots, and existing surfaces;
 - semantic color, spacing, type, radius, motion, and breakpoint tokens;
 - accessibility and platform conventions;
@@ -29,10 +31,18 @@ undocumented design system.
 
 ## 2. Sketch with the project's own tooling
 
-Choose the drafting surface from the project's configuration, not from habit:
+When an approved design already exists — handed over by the user, produced by a
+designer or a design agent, or settled in an earlier round — do not redraw it.
+Confirm which version is approved, read it closely enough to implement it, and
+raise what it leaves undetermined instead of deciding silently. That design is
+the sketch; skip to implementation.
 
-- a connected design tool when the project keeps its canonical design there —
-  load any mandatory tool-specific skill before writing to a design file;
+Otherwise choose the drafting surface from the project's configuration, not from
+habit:
+
+- the design surface the project already keeps its canonical design in,
+  whichever tool or hosted project that is — load any mandatory skill for that
+  surface before writing through it;
 - the project's own preview surface — component explorer, playground, sandbox
   route — when it has one;
 - otherwise a throwaway page, route, or file rendered with the project's real
@@ -45,9 +55,9 @@ implementation code. Do not quietly drop the review checkpoint.
 In the sketch, compose from existing components and semantic tokens before
 drawing custom elements, and show the states the implementation must support:
 default, loading, empty, error, disabled, focus and hover where material,
-narrow and wide layouts, and light/dark modes when both ship. Put it in the
-project's designated work area under a task or issue title so it can be found
-again during verification.
+narrow and wide layouts, and light/dark modes when both ship. Put it wherever
+that surface keeps in-progress work, titled with the task or issue, so it can be
+found again during verification.
 
 Show it to the user and stop for approval or redirection. A sketch that was
 never shown is still an assumption, and "small" is not a reason to skip review
@@ -67,7 +77,7 @@ reconcile the design instead of silently drifting.
 
 Automated checks prove code behavior; the running application proves
 integration; an inspected screenshot proves the rendered result; comparison with
-the approved sketch proves intent. A passing suite is not visual proof.
+the approved design proves intent. A passing suite is not visual proof.
 
 1. Run the narrowest relevant automated tests, adding a regression test when the
    change warrants one, then the repository's lint and type checks.
@@ -79,7 +89,7 @@ the approved sketch proves intent. A passing suite is not visual proof.
    bypass.
 4. Capture screenshots and have every one of them inspected (below), recording
    the route, viewport, test data, and state that reproduces each image.
-5. Compare the result against the approved sketch, reference screenshot, or
+5. Compare the result against the approved design, reference render, or
    design-system example. Report divergences instead of silently preferring
    either artifact.
 6. Tear down what you launched, leaving user-owned processes untouched. Report
@@ -95,7 +105,7 @@ delegate the looking rather than skipping it:
 - Prefer the `ui-screenshot-reviewer` subagent, which carries the review
   criteria. Any subagent works otherwise; tell it what to look for.
 - Give it the image paths, the route/viewport/state behind each, and the
-  approved sketch when one exists.
+  approved design when one exists.
 - Ask for findings as text: what is wrong, in which image, where in the frame,
   which rule or token it violates, and how severe it is.
 - Ask it to review, not to fix. Keep related screenshots in one pass so findings
@@ -152,14 +162,21 @@ personal browser profile.
 
 After verification, identify what is genuinely reusable. Promote a stable
 component, token, or pattern into the project's canonical library; leave one-off
-screen composition with the screen. When promotion changes a shared design file
-or a public component API, surface the candidate set to the user before making
-that outward change.
+screen composition with the screen. When promotion changes a shared design
+source or a public component API, surface the candidate set to the user before
+making that outward change.
 
-Preserve token bindings, nested instances, vectors, variants, and interaction
-states when promoting. Prefer moving a true master or cloning the real designed
-node over rebuilding it from generated CSS. Verify both the library entry and an
-existing consumer after promotion.
+Promote into whichever artifact is canonical, and follow the direction the
+project's design source is maintained in:
+
+- generated from the code library — promote in code, then re-run the project's
+  own sync so the design source follows. Hand-edits to generated output are lost
+  on the next sync, and a sync run has its own verification steps to complete.
+- authored by hand — edit it directly, preserving token bindings, nested
+  instances, vectors, variants, and interaction states. Move a true master or
+  clone the real designed node rather than rebuilding it from generated CSS.
+
+Verify both the library entry and an existing consumer after promotion.
 
 ## Evidence standard
 
