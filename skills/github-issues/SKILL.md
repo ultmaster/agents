@@ -1,6 +1,6 @@
 ---
 name: github-issues
-description: Track work in GitHub Issues across arbitrary repositories. Use whenever an agent needs to list or read issues, inspect a complete issue thread and its attached images, create an issue, post signed diagnostic/progress/proof comments, manage status or area labels, or resume work from an issue. Uses upstream-first repository discovery with an explicit --repo override, local attachment caching, dry-run previews, and --yes-gated writes.
+description: Track work in GitHub Issues across arbitrary repositories. Use whenever an agent needs to list or read issues, inspect a complete issue thread and its attached images, create an issue, post signed diagnostic/progress/proof comments, manage status or area labels, archive inactive terminal issues, or resume work from an issue. Uses upstream-first repository discovery with an explicit --repo override, local attachment caching, dry-run previews, and --yes-gated writes.
 ---
 
 # GitHub Issues
@@ -14,9 +14,11 @@ TRACKER="<skill-root>/scripts/issue-tracker.sh"
 ```
 
 In a sandboxed agent harness, request outside-sandbox/host execution before
-every non-dry-run helper call, including reads: the helper needs the host's
-`gh` authentication and network access. `help` and `--dry-run` stay local.
-Escalation only provides access; writes still require user intent and `--yes`.
+every helper call that reads GitHub: the helper needs the host's `gh`
+authentication and network access. Most `--dry-run` calls stay local; `archive
+--dry-run` reads issue metadata to produce its candidate list. `help` is always
+local. Escalation only provides access; writes still require user intent and
+`--yes`.
 
 Prefer the repository's own issue skill when it has one: a project that
 documents its label scheme, status vocabulary, or tracker conventions in its own
@@ -82,6 +84,8 @@ review:
 "$TRACKER" status 42 --set in-progress --yes
 "$TRACKER" area 42 --set api,frontend --yes
 "$TRACKER" area 42 --add docs --yes
+"$TRACKER" archive --inactive-for 90d --dry-run
+"$TRACKER" archive --inactive-for 90d --yes
 ```
 
 `create` and `comment` require attribution. Pass `--sign` or configure
@@ -92,6 +96,14 @@ Areas default to labels such as `area:api`. Configure the prefix, color, and
 bare-label vocabulary in `.env` for repositories with an established label
 scheme. Status uses one managed status at a time; areas are additive. Missing
 labels are created without overwriting existing label metadata.
+
+`archive` is the only command that closes issues. It considers open issues with
+the canonical `resolved` or `tracked-elsewhere` status and compares GitHub's
+`updatedAt` timestamp with the required `--inactive-for` age. Accept values such
+as `24h`, `30d`, `12w`, `6mo`, or `1y`; months are fixed at 30 days and years at
+365 days. Preview the exact candidates first. Resolved issues close as
+completed; tracked-elsewhere issues close as not planned. If a label query hits
+the default 1000-issue limit, increase `--limit` before the confirmed run.
 
 For image uploads, install `drogers0/gh-image` if the helper requests it. Images
 referenced in a body by the same path or basename passed to `--image` are
@@ -112,8 +124,9 @@ session token in arguments, bodies, logs, or commits.
    PR. Match proof to the change: tests/logs for logic, rendered screenshots for
    UI behavior. For UI work, use the `ui-work` skill and attach the inspected
    runtime screenshots to the issue with the route and state they prove.
-6. Post final proof and set `resolved`. Agents never close or reopen issues; a
-   human verifies the evidence and changes issue state.
+6. Post final proof and set `resolved`. Do not close or reopen an individual
+   issue ad hoc. Use `archive` only as a separately authorized maintenance pass
+   after the configured inactivity period.
 
 Keep issue prose readable on GitHub: do not hard-wrap paragraphs, but retain
 semantic breaks between paragraphs, list items, tables, and fenced code.

@@ -1,4 +1,4 @@
 interface:
   display_name: "GitHub Issues"
-  short_description: "Work GitHub issues with durable evidence"
-  default_prompt: "Use $github-issues to read and work this GitHub issue end to end."
+  short_description: "Work and archive GitHub issues with evidence"
+  default_prompt: "Use $github-issues to work with or safely archive GitHub issues."

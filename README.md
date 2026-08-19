@@ -25,7 +25,7 @@ user-level discovery paths outside the checkout.
 | `ai-marker-triage` | Triage typed AI markers without guessing away questions. |
 | `circleci` | Reproduce, inspect, trigger, and diagnose CircleCI pipelines. |
 | `github-actions` | Reproduce, inspect, dispatch, and diagnose workflow runs. |
-| `github-issues` | Work GitHub issues as durable, evidence-backed task records. |
+| `github-issues` | Work GitHub issues as durable records and archive inactive terminal issues. |
 | `test-strategy` | Choose truthful test boundaries and verify changes at the right layers. |
 | `ui-work` | Design, implement, and prove visual changes in the running interface. |
 | `windows-dev` | Diagnose shell, filesystem, build, and process failures on Windows and WSL. |

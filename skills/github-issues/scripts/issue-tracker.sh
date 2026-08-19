@@ -53,8 +53,9 @@ Read-only commands:
 Write commands (require --yes; --dry-run previews):
   create --title TEXT [...]      Open a new issue (labels, areas, status, images).
   comment <issue> [--body TEXT] Post a comment, optionally uploading images.
-  status <issue> --set <name>   Set the issue's status label; never change issue state.
+  status <issue> --set <name>   Set the issue's status label.
   area <issue> --set <names>    Manage configurable area labels (additive).
+  archive --inactive-for AGE    Close inactive resolved/tracked-elsewhere issues.
 
 Repo selection (any command): --repo <owner/repo> (or <host/owner/repo>).
   Without --repo: prefer the local `upstream` remote, then the current branch's
@@ -62,7 +63,7 @@ Repo selection (any command): --repo <owner/repo> (or <host/owner/repo>).
   the current repo. Discovery refuses ambiguous or non-GitHub remotes.
 
 Common options:
-  --dry-run                     Print the gh command(s) without running them.
+  --dry-run                     Preview writes; archive still reads candidates.
   --yes                         Confirm a write operation.
 
 Local settings and the issue cache come from the repository's own profile
@@ -84,6 +85,8 @@ Examples:
   issue-tracker.sh comment 8 --body "Fixed in owner/project@abc1234" --sign "<agent identity>" --yes
   issue-tracker.sh comment 8 --body-file proof.md --image screenshot.png --sign "<agent identity>" --yes
   issue-tracker.sh status 8 --set resolved --yes
+  issue-tracker.sh archive --inactive-for 90d --dry-run
+  issue-tracker.sh archive --inactive-for 90d --yes
   issue-tracker.sh area 8 --set frontend,api --yes
 USAGE
 }
@@ -150,7 +153,8 @@ Otherwise configure GitHub CLI auth before using issue-tracker.sh:
   gh auth login --hostname ${host} --scopes repo
 
 For automation, provide a token in GH_TOKEN (or GITHUB_TOKEN) with repo scope
-(read for list/view; write for create/comment/status/area) on the target repo.
+(read for list/view; write for create/comment/status/area/archive) on the target
+repo.
 AUTH
   exit 1
 }
@@ -465,6 +469,7 @@ status_color() {
     blocked) printf 'b60205' ;;
     needs-info) printf 'd876e3' ;;
     resolved) printf '0e8a16' ;;
+    tracked-elsewhere) printf '5319e7' ;;
     wontfix) printf 'ffffff' ;;
     duplicate) printf 'cfd3d7' ;;
     *) printf 'c5def5' ;; # unknown status -> light blue
@@ -473,7 +478,7 @@ status_color() {
 
 # The canonical status labels, used to clear a prior status when setting a new
 # one (so an issue carries at most one status label at a time).
-readonly STATUS_NAMES="triage investigating in-progress blocked needs-info resolved wontfix duplicate"
+readonly STATUS_NAMES="triage investigating in-progress blocked needs-info resolved tracked-elsewhere wontfix duplicate"
 is_status_name() {
   case " ${STATUS_NAMES} " in
     *" $1 "*) return 0 ;;
@@ -515,6 +520,28 @@ is_area_label() {
 # Split a comma/space-separated list into one item per line.
 split_list() {
   printf '%s' "$1" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d'
+}
+
+# Convert a human-facing inactivity age to seconds. Month/year units are fixed
+# durations so the same input produces one unambiguous cutoff on every host.
+inactive_duration_seconds() {
+  local raw="${1,,}" amount unit multiplier seconds
+  raw="${raw//[[:space:]]/}"
+  if [[ ! "${raw}" =~ ^([1-9][0-9]*)(h|hours?|d|days?|w|weeks?|mo|months?|y|years?)$ ]]; then
+    die "invalid inactivity duration '$1'; use values such as 24h, 30d, 12w, 6mo, or 1y"
+  fi
+  amount="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[2]}"
+  case "${unit}" in
+    h | hour | hours) multiplier=3600 ;;
+    d | day | days) multiplier=86400 ;;
+    w | week | weeks) multiplier=604800 ;;
+    mo | month | months) multiplier=2592000 ;;
+    y | year | years) multiplier=31536000 ;;
+  esac
+  seconds=$((amount * multiplier))
+  ((seconds > 0)) || die "inactivity duration '$1' is too large"
+  printf '%s' "${seconds}"
 }
 
 cmd_repo() {
@@ -844,7 +871,7 @@ cmd_status() {
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
       --set) shift; (($#)) || die "--set requires a value"; set_status="$1" ;;
-      --close | --reopen) die "agents do not close or reopen issues; set a status label and leave state changes to a human" ;;
+      --close | --reopen) die "status only manages labels; use archive for authorized inactivity-based closing" ;;
       --yes) assume_yes=1 ;;
       --dry-run) dry_run=1 ;;
       -h | --help)
@@ -852,9 +879,10 @@ cmd_status() {
 Usage: issue-tracker.sh status <issue> --set <name> [--repo R] --yes
   Sets a single status label (replacing any existing canonical status label),
   creating the label if missing. Canonical names:
-    triage investigating in-progress blocked needs-info resolved wontfix duplicate
-  Issue state is deliberately not changed; agents mark resolved and leave
-  closing/reopening to a human.
+    triage investigating in-progress blocked needs-info resolved
+    tracked-elsewhere wontfix duplicate
+  This command never changes issue state. Use archive for the separately
+  authorized cleanup of inactive terminal issues.
 USAGE
         return 0 ;;
       -*) die "Unknown status option: $1" ;;
@@ -904,6 +932,138 @@ USAGE
   log "Setting ${repo}#${num} -> ${new_label}"
   gh issue edit "${num}" -R "${repo}" --add-label "${new_label}" "${remove[@]}"
   return 0
+}
+
+cmd_archive() {
+  dry_run=0
+  assume_yes=0
+  local repo_in="" inactive_for="" limit=1000
+  while (($#)); do
+    case "$1" in
+      --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
+      --inactive-for | --older-than) shift; (($#)) || die "--inactive-for requires a value"; inactive_for="$1" ;;
+      --limit | -n) shift; (($#)) || die "--limit requires a value"; limit="$1" ;;
+      --yes) assume_yes=1 ;;
+      --dry-run) dry_run=1 ;;
+      -h | --help)
+        cat <<'USAGE'
+Usage: issue-tracker.sh archive --inactive-for AGE [--limit N] [--repo R] (--dry-run | --yes)
+  Close open issues carrying `resolved` or `tracked-elsewhere` when their
+  GitHub updatedAt timestamp is at or before the inactivity cutoff.
+
+  AGE accepts hours, days, weeks, fixed 30-day months, or fixed 365-day years:
+    24h  30d  12w  6mo  1y  "90 days"
+
+  `resolved` issues close as completed; `tracked-elsewhere` issues close as not
+  planned. If both labels are present, completed wins. --dry-run reads GitHub
+  and prints every candidate and close command without changing issue state.
+  --limit applies separately to each terminal label and defaults to 1000.
+USAGE
+        return 0 ;;
+      *) die "Unknown archive option: $1" ;;
+    esac
+    shift
+  done
+  [[ -n "${inactive_for}" ]] || die "archive requires --inactive-for AGE"
+  [[ "${limit}" =~ ^[1-9][0-9]*$ ]] || die "--limit must be a positive integer"
+  ((dry_run == 0 || assume_yes == 0)) || die "use only one of --dry-run / --yes"
+
+  local inactive_seconds repo now_epoch cutoff_epoch cutoff_iso
+  inactive_seconds="$(inactive_duration_seconds "${inactive_for}")"
+  repo="$(resolve_repo "${repo_in}")"
+  require_confirmation "archive"
+  require_gh_auth "${repo}"
+
+  now_epoch="$(date +%s)"
+  [[ "${now_epoch}" =~ ^[0-9]+$ ]] || die "could not read the current time"
+  cutoff_epoch=$((now_epoch - inactive_seconds))
+  ((cutoff_epoch >= 0)) || cutoff_epoch=0
+  cutoff_iso="$(jq -nr --argjson epoch "${cutoff_epoch}" '$epoch | todateiso8601')"
+
+  local fields="number,title,updatedAt,url,labels"
+  local resolved_json tracked_json
+  if ! resolved_json="$(gh issue list -R "${repo}" --state open --label resolved \
+    --limit "${limit}" --json "${fields}")"; then
+    die "could not list open resolved issues in ${repo}; nothing was archived"
+  fi
+  if ! tracked_json="$(gh issue list -R "${repo}" --state open --label tracked-elsewhere \
+    --limit "${limit}" --json "${fields}")"; then
+    die "could not list open tracked-elsewhere issues in ${repo}; nothing was archived"
+  fi
+
+  local resolved_count tracked_count saturated=0
+  resolved_count="$(printf '%s' "${resolved_json}" | jq -er 'if type == "array" then length else error("not an array") end')" \
+    || die "GitHub returned invalid resolved issue data; nothing was archived"
+  tracked_count="$(printf '%s' "${tracked_json}" | jq -er 'if type == "array" then length else error("not an array") end')" \
+    || die "GitHub returned invalid tracked-elsewhere issue data; nothing was archived"
+  ((resolved_count >= limit || tracked_count >= limit)) && saturated=1
+
+  local candidates
+  if ! candidates="$(printf '%s\n%s\n' "${resolved_json}" "${tracked_json}" | jq -ces \
+    --argjson cutoff "${cutoff_epoch}" '
+      add
+      | unique_by(.number)
+      | map(select(
+          (.updatedAt | fromdateiso8601) <= $cutoff
+          and any(.labels[]?.name; . == "resolved" or . == "tracked-elsewhere")
+        ))
+      | sort_by(.updatedAt, .number)
+    ')"; then
+    die "could not evaluate archive candidates; nothing was archived"
+  fi
+
+  local candidate_count
+  candidate_count="$(printf '%s' "${candidates}" | jq -r 'length')"
+  printf 'Repository:        %s\n' "${repo}"
+  printf 'Terminal labels:   resolved, tracked-elsewhere\n'
+  printf 'Inactivity cutoff: %s  (%s)\n' "${cutoff_iso}" "${inactive_for}"
+  printf 'Candidates:        %s\n' "${candidate_count}"
+  if ((saturated)); then
+    printf 'warning: at least one label query reached --limit %s; the candidate list may be incomplete\n' "${limit}" >&2
+  fi
+
+  if ((! dry_run && saturated)); then
+    die "refusing to archive from a possibly truncated list; rerun with a larger --limit"
+  fi
+
+  if ((candidate_count == 0)); then
+    printf '\nNo inactive terminal issues found.\n'
+    return 0
+  fi
+
+  printf '\n'
+  printf '%s' "${candidates}" | jq -r '
+    .[]
+    | ([.labels[]?.name] | map(select(. == "resolved" or . == "tracked-elsewhere")) | join(",")) as $statuses
+    | "  #\(.number)  [\($statuses)]  \(.updatedAt)  \(.title)"
+  '
+
+  if ((dry_run)); then
+    printf '\n'
+    while IFS=$'\t' read -r num reason; do
+      printf '+ gh issue close %q -R %q --reason %q\n' "${num}" "${repo}" "${reason}"
+    done < <(printf '%s' "${candidates}" | jq -r '
+      .[] | [(.number | tostring), (if any(.labels[]?.name; . == "resolved") then "completed" else "not planned" end)] | @tsv
+    ')
+    printf '\n%s issue(s) would be closed.\n' "${candidate_count}"
+    return 0
+  fi
+
+  local num reason closed=0 failed=0
+  while IFS=$'\t' read -r num reason; do
+    log "Closing ${repo}#${num} (${reason})"
+    if gh issue close "${num}" -R "${repo}" --reason "${reason}"; then
+      closed=$((closed + 1))
+    else
+      printf 'error: failed to close %s#%s\n' "${repo}" "${num}" >&2
+      failed=$((failed + 1))
+    fi
+  done < <(printf '%s' "${candidates}" | jq -r '
+    .[] | [(.number | tostring), (if any(.labels[]?.name; . == "resolved") then "completed" else "not planned" end)] | @tsv
+  ')
+
+  ((failed == 0)) || die "archive was partial: ${closed} closed, ${failed} failed"
+  printf '\n%s issue(s) closed.\n' "${closed}"
 }
 
 cmd_area() {
@@ -1274,6 +1434,7 @@ main() {
     create | new) cmd_create "$@" ;;
     comment) cmd_comment "$@" ;;
     status) cmd_status "$@" ;;
+    archive) cmd_archive "$@" ;;
     area | module) cmd_area "$@" ;;
     labels) cmd_labels "$@" ;;
     repo | repos) cmd_repo "$@" ;;

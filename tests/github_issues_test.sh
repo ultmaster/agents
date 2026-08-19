@@ -69,7 +69,19 @@ case "${1:-} ${2:-}" in
     printf '%s\n' 'https://github.com/owner/project/issues/1'
     exit 0
     ;;
-  'issue edit'|'issue list'|'label create'|'label list') exit 0 ;;
+  'issue list')
+    if [[ " $* " == *' --json '* ]]; then
+      if [[ " $* " == *' --label resolved '* ]]; then
+        printf '%s\n' "${GH_FAKE_RESOLVED_JSON:-[]}"
+      elif [[ " $* " == *' --label tracked-elsewhere '* ]]; then
+        printf '%s\n' "${GH_FAKE_TRACKED_JSON:-[]}"
+      else
+        printf '%s\n' "${GH_FAKE_LIST_JSON:-[]}"
+      fi
+    fi
+    exit 0
+    ;;
+  'issue edit'|'issue close'|'label create'|'label list') exit 0 ;;
 esac
 
 printf 'unexpected fake gh invocation: %s\n' "$*" >&2
@@ -139,6 +151,7 @@ new_case() {
   : >"${CURL_FAKE_LOG}"
   export CASE_DIR GH_FAKE_LOG CURL_FAKE_LOG GH_CAPTURE_BODY
   unset GH_FAKE_MODE GH_FAKE_LABELS GH_FAKE_JSON GH_FAKE_REPO
+  unset GH_FAKE_LIST_JSON GH_FAKE_RESOLVED_JSON GH_FAKE_TRACKED_JSON
 }
 
 run_test() {
@@ -266,6 +279,14 @@ test_managed_label_replacement() {
   assert_contains "${log}" '--remove-label triage'
 
   : >"${GH_FAKE_LOG}"
+  export GH_FAKE_LABELS='resolved'
+  capture "${TRACKER}" status 15 --set tracked-elsewhere --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'label create tracked-elsewhere'
+  assert_contains "${log}" '--remove-label resolved'
+
+  : >"${GH_FAKE_LOG}"
   export GH_FAKE_LABELS=$'area:old\nunrelated'
   capture "${TRACKER}" area 14 --set api --repo owner/project --yes
   assert_eq 0 "${RUN_STATUS}"
@@ -273,6 +294,61 @@ test_managed_label_replacement() {
   assert_contains "${log}" 'label create area:api'
   assert_contains "${log}" '--remove-label area:old'
   assert_not_contains "${log}" '--remove-label unrelated'
+}
+
+test_archive_closes_only_inactive_terminal_issues() {
+  new_case
+
+  capture "${TRACKER}" archive --inactive-for someday --repo owner/project --dry-run
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'invalid archive duration was accepted'
+  assert_contains "${RUN_OUTPUT}" 'invalid inactivity duration'
+  [ ! -s "${GH_FAKE_LOG}" ] || fail 'invalid duration invoked gh'
+
+  capture "${TRACKER}" archive --inactive-for 30d --repo owner/project
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'archive was accepted without --dry-run or --yes'
+  assert_contains "${RUN_OUTPUT}" 're-run with --yes to confirm'
+  [ ! -s "${GH_FAKE_LOG}" ] || fail 'confirmation failure invoked gh'
+
+  export GH_FAKE_RESOLVED_JSON='[
+    {"number":21,"title":"Old resolution","updatedAt":"2000-01-01T00:00:00Z","url":"https://github.com/owner/project/issues/21","labels":[{"name":"resolved"}]},
+    {"number":22,"title":"Recent resolution","updatedAt":"2999-01-01T00:00:00Z","url":"https://github.com/owner/project/issues/22","labels":[{"name":"resolved"}]},
+    {"number":24,"title":"Unrelated old issue","updatedAt":"2000-01-01T00:00:00Z","url":"https://github.com/owner/project/issues/24","labels":[{"name":"bug"}]}
+  ]'
+  export GH_FAKE_TRACKED_JSON='[
+    {"number":23,"title":"Tracked in another system","updatedAt":"2001-01-01T00:00:00Z","url":"https://github.com/owner/project/issues/23","labels":[{"name":"tracked-elsewhere"}]}
+  ]'
+
+  capture "${TRACKER}" archive --inactive-for '30 days' --repo owner/project --dry-run
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" '#21'
+  assert_contains "${RUN_OUTPUT}" '#23'
+  assert_not_contains "${RUN_OUTPUT}" '#22'
+  assert_not_contains "${RUN_OUTPUT}" '#24'
+  assert_contains "${RUN_OUTPUT}" '--reason completed'
+  assert_contains "${RUN_OUTPUT}" '--reason not\ planned'
+  local log
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'issue list'
+  assert_not_contains "${log}" 'issue close'
+
+  : >"${GH_FAKE_LOG}"
+  capture "${TRACKER}" archive --inactive-for 30d --limit 1 --repo owner/project --yes
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'archive accepted a possibly truncated candidate list'
+  assert_contains "${RUN_OUTPUT}" 'refusing to archive from a possibly truncated list'
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_not_contains "${log}" 'issue close'
+
+  : >"${GH_FAKE_LOG}"
+  capture "${TRACKER}" archive --inactive-for 30d --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" '2 issue(s) closed'
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'issue close 21'
+  assert_contains "${log}" '--reason completed'
+  assert_contains "${log}" 'issue close 23'
+  assert_contains "${log}" '--reason not\ planned'
+  assert_not_contains "${log}" 'issue close 22'
+  assert_not_contains "${log}" 'issue close 24'
 }
 
 test_view_caches_attachments_without_token_in_arguments() {
@@ -414,6 +490,7 @@ run_test 'discovers the canonical upstream repository first' test_repository_dis
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
+run_test 'archives only inactive resolved/tracked-elsewhere issues' test_archive_closes_only_inactive_terminal_issues
 run_test 'caches attachments without tokens in curl arguments' test_view_caches_attachments_without_token_in_arguments
 run_test 'structures default cache paths by host and repository' test_default_cache_is_structured_by_host_and_repository
 run_test 'resolves settings and cache from the repository profile' test_repository_profile_owns_settings_and_cache
