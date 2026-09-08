@@ -111,6 +111,30 @@ rewritten inline; unreferenced uploads are appended. Browser-session extraction
 is preferred, with `GH_SESSION_TOKEN` in `.env` only as a fallback. Never put a
 session token in arguments, bodies, logs, or commits.
 
+## Diagnose image-upload failures
+
+Run `"$TRACKER" doctor --repo owner/repo` on the host first. CLI authentication
+and a browser web session are separate checks; a valid `gh` login does not
+prove browser-cookie extraction works. Inspect `gh image --version` when
+`check-token` reports an empty session or `net/http` warns about invalid cookie
+bytes. Those symptoms alone do not prove the browser session expired.
+
+If the installed version ends in `-hbd`, test the official standard build
+before requesting a manual cookie or patching the extraction library. The
+standard 1.3.0 build (kooky) successfully read an existing Linux browser session
+that 1.3.0-hbd could not. Treat this as a backend-specific diagnostic, not a
+universal HBD failure. Discover the current release assets for the host OS and
+architecture, verify the published checksum, and run the candidate's
+`check-token` with `GH_SESSION_TOKEN` unset. This checks the browser path without
+printing the cookie. Avoid `extract-token`, which exposes it.
+
+When repairing the installed tool is authorized, retain a rollback copy and
+install the verified working binary. Re-run `doctor`, then verify a real upload
+using the already-requested, inspected screenshots. `doctor --live --yes`
+creates an orphan diagnostic asset; prefer the intended proof upload when one
+is pending. Read back the issue to confirm its attachments, and record recovery
+in the related child issue. Keep local proof files until upload succeeds.
+
 ## Work an issue
 
 1. Run `view`, read the entire body and comment history, and inspect relevant
