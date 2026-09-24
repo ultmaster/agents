@@ -44,7 +44,10 @@ copy_body_file() {
 case "${1:-} ${2:-}" in
   'auth status') exit "${GH_FAKE_AUTH_STATUS:-0}" ;;
   'auth token') printf '%s\n' 'fake-secret-token'; exit 0 ;;
-  'api --hostname') printf '%s\n' 'fake-agent'; exit 0 ;;
+  'api --hostname')
+    # Reading a posted issue or comment back returns the captured body.
+    if [[ "${4:-}" == repos/*/issues/* ]]; then cat "${GH_CAPTURE_BODY:?}"; exit 0; fi
+    printf '%s\n' 'fake-agent'; exit 0 ;;
   'repo view') printf '%s\n' "${GH_FAKE_REPO:-fallback/repository}"; exit 0 ;;
   'image --help') printf '%s\n' 'fake gh-image help'; exit 0 ;;
   'image check-token') printf '%s\n' 'fake-agent'; exit 0 ;;
@@ -73,7 +76,11 @@ case "${1:-} ${2:-}" in
     ;;
   'issue create'|'issue comment')
     copy_body_file "$@"
-    printf '%s\n' 'https://github.com/owner/project/issues/1'
+    if [ "$2" = comment ]; then
+      printf '%s\n' 'https://github.com/owner/project/issues/7#issuecomment-555'
+    else
+      printf '%s\n' 'https://github.com/owner/project/issues/1'
+    fi
     exit 0
     ;;
   'issue list')
@@ -102,6 +109,18 @@ set -euo pipefail
 
 printf '%q ' "$@" >>"${CURL_FAKE_LOG:?}"
 printf '\n' >>"${CURL_FAKE_LOG}"
+# A status probe (-w) answers from CURL_FAKE_STATUSES, one status per call; the
+# last one repeats. Headers read with --header @- are logged apart from argv.
+if [[ " $* " == *' -w '* ]]; then
+  if [[ " $* " == *' --header @- '* ]]; then cat >>"${CURL_FAKE_LOG}.stdin"; fi
+  statuses=(${CURL_FAKE_STATUSES:-302})
+  count_file="${CURL_FAKE_LOG}.count"
+  n=$(( $(cat "${count_file}" 2>/dev/null || echo 0) ))
+  printf '%s' "$((n + 1))" >"${count_file}"
+  (( n < ${#statuses[@]} )) || n=$(( ${#statuses[@]} - 1 ))
+  printf '%s' "${statuses[n]}"
+  exit 0
+fi
 output=''
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '-o' ]; then
@@ -158,7 +177,8 @@ new_case() {
   : >"${CURL_FAKE_LOG}"
   export CASE_DIR GH_FAKE_LOG CURL_FAKE_LOG GH_CAPTURE_BODY
   unset GH_FAKE_MODE GH_FAKE_LABELS GH_FAKE_JSON GH_FAKE_REPO
-  unset GH_FAKE_LIST_JSON GH_FAKE_RESOLVED_JSON GH_FAKE_TRACKED_JSON
+  unset GH_FAKE_LIST_JSON GH_FAKE_RESOLVED_JSON GH_FAKE_TRACKED_JSON CURL_FAKE_STATUSES
+  export ISSUE_TRACKER_ASSET_DELAY=0 ISSUE_TRACKER_ASSET_CHECKS=3
 }
 
 run_test() {
@@ -265,6 +285,49 @@ test_gh_image_upload_survives_its_separator_change() {
   assert_contains "${log}" 'image --repo owner/project ./-dash.png'
   assert_not_contains "${log}" ' -- '
   assert_contains "$(cat "${GH_CAPTURE_BODY}")" 'see ![s](https://github.com/user-attachments/assets/fake-upload)'
+}
+
+test_posted_attachments_are_verified_before_success() {
+  new_case
+  printf '%s' 'png' >"${CASE_DIR}/shot.png"
+
+  # Served on the first probe: success, and the token never reaches argv.
+  capture "${TRACKER}" comment 7 --body 'x' --image "${CASE_DIR}/shot.png" \
+    --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" '1 attachment(s) served'
+  assert_contains "$(cat "${GH_FAKE_LOG}")" 'api --hostname github.com repos/owner/project/issues/comments/555'
+  assert_not_contains "$(cat "${CURL_FAKE_LOG}")" 'fake-secret-token'
+  assert_contains "$(cat "${CURL_FAKE_LOG}.stdin")" 'Authorization: token fake-secret-token'
+
+  # Accepted but never served: the post stands, the helper refuses to call it done.
+  new_case
+  printf '%s' 'png' >"${CASE_DIR}/shot.png"
+  CURL_FAKE_STATUSES='404' capture "${TRACKER}" create --title T --body 'x' \
+    --image "${CASE_DIR}/shot.png" --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 3 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" 'https://github.com/owner/project/issues/1'
+  assert_contains "${RUN_OUTPUT}" 'not being served'
+  assert_contains "${RUN_OUTPUT}" 'HTTP 404  https://github.com/user-attachments/assets/fake-upload'
+  assert_contains "${RUN_OUTPUT}" 'Do not report these images as visible'
+  assert_eq 3 "$(cat "${CURL_FAKE_LOG}.count")"
+
+  # Served after a delay: retries until it is.
+  new_case
+  printf '%s' 'png' >"${CASE_DIR}/shot.png"
+  CURL_FAKE_STATUSES='404 404 302' capture "${TRACKER}" comment 7 --body 'x' \
+    --image "${CASE_DIR}/shot.png" --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" '1 attachment(s) served'
+
+  # The read-only verify command re-checks a post later.
+  printf 'body ![a](https://github.com/user-attachments/assets/aaa)\n' >"${GH_CAPTURE_BODY}"
+  : >"${CURL_FAKE_LOG}.count"
+  CURL_FAKE_STATUSES='404' capture "${TRACKER}" verify 'https://github.com/owner/project/issues/7#issuecomment-555'
+  assert_eq 3 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" 'HTTP 404  https://github.com/user-attachments/assets/aaa'
+  CURL_FAKE_STATUSES='302' capture "${TRACKER}" verify 'https://github.com/owner/project/issues/7#issuecomment-555'
+  assert_eq 0 "${RUN_STATUS}"
 }
 
 test_status_and_area_read_failure_precedes_writes() {
@@ -512,6 +575,7 @@ run_test 'names the sandbox before blaming a GitHub login' test_auth_failure_nam
 run_test 'discovers the canonical upstream repository first' test_repository_discovery_prefers_upstream
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
 run_test 'uploads with gh-image without its -- separator' test_gh_image_upload_survives_its_separator_change
+run_test 'verifies posted attachments are served' test_posted_attachments_are_verified_before_success
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'archives only inactive resolved/tracked-elsewhere issues' test_archive_closes_only_inactive_terminal_issues

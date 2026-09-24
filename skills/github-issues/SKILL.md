@@ -54,6 +54,7 @@ Read-only commands:
 "$TRACKER" view 42
 "$TRACKER" view 42 --repo owner/project --dir /tmp/issue-42
 "$TRACKER" labels
+"$TRACKER" verify https://github.com/owner/project/issues/42#issuecomment-123
 ```
 
 `view` prints the body and every comment, then caches `issue.json`, `issue.md`,
@@ -110,6 +111,16 @@ referenced in a body by the same path or basename passed to `--image` are
 rewritten inline; unreferenced uploads are appended. Browser-session extraction
 is preferred, with `GH_SESSION_TOKEN` in `.env` only as a fallback. Never put a
 session token in arguments, bodies, logs, or commits.
+
+A returned attachment URL does not prove GitHub serves the file. After posting
+images, the helper reads the post back and checks each attachment, retrying for
+about a minute. Exit status 3 means the post exists but some attachment is not
+served yet: do not report those images as attached or visible. During an
+incident GitHub has accepted uploads and served them only hours later while
+`doctor` still passed. Check https://www.githubstatus.com, then run `verify` on
+the posted URL before claiming the images. To show an image that is already
+served elsewhere in the same repository, reuse its URL rather than uploading
+the file again.
 
 ## Diagnose image-upload failures
 

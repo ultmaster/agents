@@ -49,6 +49,7 @@ Read-only commands:
   labels [--repo R]             List a repo's labels.
   repo [--repo R]               Print the selected repository.
   doctor [--live --yes]         Check this machine can upload issue images.
+  verify <issue-or-comment-url> Check a post's attachments are actually served.
 
 Write commands (require --yes; --dry-run previews):
   create --title TEXT [...]      Open a new issue (labels, areas, status, images).
@@ -134,6 +135,82 @@ gh_image_upload() {
     files+=("${f}")
   done
   gh image --repo "${repo}" "${files[@]}"
+}
+
+# HTTP status GitHub returns for one attachment URL. The token rides in a header
+# read from stdin so it never appears in curl's process arguments.
+attachment_status() {
+  local url="$1" token="$2"
+  if [[ -n "${token}" ]]; then
+    printf 'Authorization: token %s\n' "${token}" \
+      | curl -s -m 30 -o /dev/null -w '%{http_code}' --header @- "${url}" 2>/dev/null || true
+  else
+    curl -s -m 30 -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || true
+  fi
+}
+
+# Body of a posted issue or comment, from the URL gh printed for it.
+posted_body() {
+  local posted_url="$1" host rest owner_repo num comment_id
+  [[ "${posted_url}" =~ ^https://([^/]+)/([^/]+/[^/]+)/issues/([0-9]+)(#issuecomment-([0-9]+))?$ ]] || return 1
+  host="${BASH_REMATCH[1]}"; owner_repo="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"; comment_id="${BASH_REMATCH[5]}"
+  if [[ -n "${comment_id}" ]]; then
+    gh api --hostname "${host}" "repos/${owner_repo}/issues/comments/${comment_id}" --jq .body
+  else
+    gh api --hostname "${host}" "repos/${owner_repo}/issues/${num}" --jq .body
+  fi
+}
+
+# Check that every GitHub attachment in a posted issue or comment is served.
+# GitHub can answer an upload with 201 and a URL yet serve the asset only after
+# a delay (or not at all during an incident), so a returned URL proves nothing.
+# Retries ISSUE_TRACKER_ASSET_CHECKS times, ISSUE_TRACKER_ASSET_DELAY seconds
+# apart. Returns 3 when an attachment is still not served.
+verify_posted_attachments() {
+  local posted_url="$1" host body token
+  [[ "${posted_url}" =~ ^https://([^/]+)/ ]] || { printf 'warning: cannot verify attachments of %s\n' "${posted_url}" >&2; return 3; }
+  host="${BASH_REMATCH[1]}"
+  if ! body="$(posted_body "${posted_url}")"; then
+    printf 'warning: could not read back %s to verify its attachments\n' "${posted_url}" >&2
+    return 3
+  fi
+  local -a urls=()
+  local url
+  while IFS= read -r url; do
+    [[ -n "${url}" ]] && urls+=("${url}")
+  done < <(grep -oE "https://${host//./\\.}/user-attachments/assets/[A-Za-z0-9._-]+" <<<"${body}" | sort -u)
+  ((${#urls[@]})) || return 0
+
+  token="$(gh auth token --hostname "${host}" 2>/dev/null || true)"
+  local checks="${ISSUE_TRACKER_ASSET_CHECKS:-6}" delay="${ISSUE_TRACKER_ASSET_DELAY:-10}" attempt code
+  local -a pending=("${urls[@]}") still=() codes=()
+  for ((attempt = 1; attempt <= checks; attempt++)); do
+    still=(); codes=()
+    for url in "${pending[@]}"; do
+      code="$(attachment_status "${url}" "${token}")"
+      if [[ "${code}" != 200 && "${code}" != 302 ]]; then
+        still+=("${url}"); codes+=("${code:-000}")
+      fi
+    done
+    pending=("${still[@]}")
+    ((${#pending[@]})) || break
+    ((attempt < checks)) && sleep "${delay}"
+  done
+  if ((${#pending[@]} == 0)); then
+    printf '  ok    %d attachment(s) served\n' "${#urls[@]}"
+    return 0
+  fi
+  {
+    printf 'warning: posted %s, but %d of %d attachment(s) are not being served:\n' \
+      "${posted_url}" "${#pending[@]}" "${#urls[@]}"
+    local i
+    for ((i = 0; i < ${#pending[@]}; i++)); do printf '  HTTP %s  %s\n' "${codes[i]}" "${pending[i]}"; done
+    printf 'Do not report these images as visible. GitHub can accept an upload and\n'
+    printf 'serve it only later, for example during an incident: check\n'
+    printf 'https://www.githubstatus.com and re-check with:\n'
+    printf '  issue-tracker.sh verify %s\n' "${posted_url}"
+  } >&2
+  return 3
 }
 
 repo_host() {
@@ -872,9 +949,13 @@ USAGE
   append_signature "${tmp_body}" "${signature}"
 
   log "Commenting on ${repo}#${num}"
-  gh issue comment "${num}" -R "${repo}" --body-file "${tmp_body}" \
+  local posted_url
+  posted_url="$(gh issue comment "${num}" -R "${repo}" --body-file "${tmp_body}")" \
     || { local rc=$?; rm -f "${tmp_body}"; return "${rc}"; }
   rm -f "${tmp_body}"
+  printf '%s\n' "${posted_url}"
+  ((image_count)) || return 0
+  verify_posted_attachments "${posted_url##*$'\n'}"
 }
 
 cmd_status() {
@@ -1320,9 +1401,39 @@ USAGE
   [[ -n "${milestone}" ]] && create_args+=(--milestone "${milestone}")
 
   log "Creating issue on ${repo}"
-  gh issue create -R "${repo}" "${create_args[@]}" \
+  local posted_url
+  posted_url="$(gh issue create -R "${repo}" "${create_args[@]}")" \
     || { local rc=$?; rm -f "${tmp_body}"; return "${rc}"; }
   rm -f "${tmp_body}"
+  printf '%s\n' "${posted_url}"
+  ((${#image_paths[@]})) || return 0
+  verify_posted_attachments "${posted_url##*$'\n'}"
+}
+
+cmd_verify() {
+  local posted_url=""
+  while (($#)); do
+    case "$1" in
+      -h | --help)
+        cat <<'USAGE'
+Usage: issue-tracker.sh verify <issue-or-comment-url>
+  Read-only. Checks that every GitHub attachment in a posted issue or comment
+  is actually served, retrying for a while (ISSUE_TRACKER_ASSET_CHECKS tries,
+  ISSUE_TRACKER_ASSET_DELAY seconds apart). Exits 3 while any is not served.
+USAGE
+        return 0 ;;
+      -*) die "Unknown verify option: $1" ;;
+      *) [[ -z "${posted_url}" ]] || die "verify takes a single URL"; posted_url="$1" ;;
+    esac
+    shift
+  done
+  [[ "${posted_url}" =~ ^https://([^/]+)/([^/]+/[^/]+)/issues/[0-9]+(#issuecomment-[0-9]+)?$ ]] ||
+    die "verify needs an issue or comment URL, e.g. https://github.com/owner/repo/issues/7#issuecomment-123"
+  local host="${BASH_REMATCH[1]}" repo="${BASH_REMATCH[2]}"
+  [[ "${host}" == github.com ]] || repo="${host}/${repo}"
+  require_gh_auth "${repo}"
+  log "verifying attachments of ${posted_url}"
+  verify_posted_attachments "${posted_url}"
 }
 
 cmd_doctor() {
@@ -1453,6 +1564,7 @@ main() {
     labels) cmd_labels "$@" ;;
     repo | repos) cmd_repo "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    verify) cmd_verify "$@" ;;
     help | -h | --help) usage ;;
     *) die "unknown command '${cmd}' (try: issue-tracker.sh help)" ;;
   esac
