@@ -93,6 +93,11 @@ review:
 `ISSUE_TRACKER_SIGNATURE` in the skill's gitignored `.env`; identify the actual
 agent and never impersonate a human. Comments receive an attribution footer.
 
+`create` automatically adds `ai-generated`, creating the label if needed.
+Use this label only for issues created by AI. Replying to or editing a
+human-created issue does not make it AI-created; `comment` never adds it.
+When creating an issue through another tool, apply the same label.
+
 Areas default to labels such as `area:api`. Configure the prefix, color, and
 bare-label vocabulary in `.env` for repositories with an established label
 scheme. Status uses one managed status at a time; areas are additive. Missing

@@ -234,6 +234,7 @@ test_validation_dry_run_and_gate() {
   assert_contains "${RUN_OUTPUT}" '+ gh issue create'
   assert_contains "${RUN_OUTPUT}" 'signature footer'
   assert_contains "${RUN_OUTPUT}" 'area:api'
+  assert_contains "${RUN_OUTPUT}" '--label ai-generated'
   [ ! -s "${GH_FAKE_LOG}" ] || fail 'dry-run invoked gh'
 
   capture "${TRACKER}" create --title Test --body Body --sign 'Test Agent' --repo owner/project
@@ -266,6 +267,32 @@ test_repository_discovery_prefers_upstream() {
   assert_eq 0 "${RUN_STATUS}"
   assert_eq canonical/project "${RUN_OUTPUT}"
   [ ! -s "${GH_FAKE_LOG}" ] || fail 'repository discovery invoked gh despite a usable upstream'
+}
+
+test_ai_generated_label_is_creation_only() {
+  new_case
+
+  capture "${TRACKER}" create --title 'Agent report' --body 'A body' --sign 'Test Agent' \
+    --label bug --area api --status triage --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  local log
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'label create ai-generated'
+  assert_contains "${log}" '--label ai-generated'
+  assert_contains "${log}" '--label bug'
+  assert_contains "${log}" '--label area:api'
+  assert_contains "${log}" '--label triage'
+  assert_not_contains "${log}" '--force'
+
+  : >"${GH_FAKE_LOG}"
+  capture "${TRACKER}" comment 7 --body 'Agent reply to a human report' \
+    --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'issue comment 7'
+  assert_not_contains "${log}" 'label create'
+  assert_not_contains "${log}" 'issue edit'
+  assert_not_contains "${log}" 'ai-generated'
 }
 
 test_signed_body_and_inline_image_composition() {
@@ -657,6 +684,7 @@ printf 'issue-tracker tests\n'
 run_test 'validates dry runs, signatures, and write confirmation' test_validation_dry_run_and_gate
 run_test 'names the sandbox before blaming a GitHub login' test_auth_failure_names_the_sandbox_before_a_login
 run_test 'discovers the canonical upstream repository first' test_repository_discovery_prefers_upstream
+run_test 'labels AI-created issues without relabeling replies' test_ai_generated_label_is_creation_only
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
 run_test 'uploads with gh-image without its -- separator' test_gh_image_upload_survives_its_separator_change
 run_test 'verifies posted attachments are served' test_posted_attachments_are_verified_before_success

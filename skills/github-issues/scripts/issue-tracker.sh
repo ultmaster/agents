@@ -1304,7 +1304,7 @@ cmd_create() {
   assume_yes=0
   local repo_in="" title="" body="" body_file="" sign_override=""
   local status_name="" area_list="" milestone=""
-  local -a image_paths=() plain_labels=() assignees=()
+  local -a image_paths=() plain_labels=("ai-generated") assignees=()
   while (($#)); do
     case "$1" in
       --repo | -R) shift; (($#)) || die "--repo requires a value"; repo_in="$1" ;;
@@ -1327,6 +1327,7 @@ Usage: issue-tracker.sh create --title TEXT [--body TEXT | --body-file FILE]
          [--assignee U ...] [--milestone M] [--sign WHO] [--repo R] --yes
 
   Open a new issue. --area / --status attach managed area and status labels;
+  New issues always receive ai-generated. Comments do not label existing issues.
   --label attaches arbitrary labels. Missing labels are created.
   Repeat --image to attach screenshots (gh --attach, else gh-image). An image referenced in
   the body by the path you pass to --image (or its basename) is rewritten to
