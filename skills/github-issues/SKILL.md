@@ -106,11 +106,14 @@ as `24h`, `30d`, `12w`, `6mo`, or `1y`; months are fixed at 30 days and years at
 completed; tracked-elsewhere issues close as not planned. If a label query hits
 the default 1000-issue limit, increase `--limit` before the confirmed run.
 
-For image uploads, install `drogers0/gh-image` if the helper requests it. Images
-referenced in a body by the same path or basename passed to `--image` are
-rewritten inline; unreferenced uploads are appended. Browser-session extraction
-is preferred, with `GH_SESSION_TOKEN` in `.env` only as a fallback. Never put a
-session token in arguments, bodies, logs, or commits.
+`--image` attaches through gh's own `--attach` (gh 2.99 or later) when gh takes
+every file: images and videos whose paths contain no `#`. Anything else, or an
+older gh, uploads through `drogers0/gh-image`; install it if the helper asks.
+Either way, a reference in the body to the path or basename passed to `--image`
+becomes the uploaded image in place, and unreferenced files are added above the
+signature. For gh-image, browser-session extraction is preferred, with
+`GH_SESSION_TOKEN` in `.env` only as a fallback. Never put a session token in
+arguments, bodies, logs, or commits.
 
 A returned attachment URL does not prove GitHub serves the file. After posting
 images, the helper reads the post back and checks each attachment, retrying for

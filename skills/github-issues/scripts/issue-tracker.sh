@@ -137,6 +137,44 @@ gh_image_upload() {
   gh image --repo "${repo}" "${files[@]}"
 }
 
+# Whether `gh issue <subcommand> --attach` (gh >= 2.99) can take every file:
+# images and videos only, and no `#`, which gh reads as the start of alt text.
+native_attach_ok() {
+  local subcommand="$1"; shift
+  gh issue "${subcommand}" --help 2>/dev/null | grep -q -- '--attach' || return 1
+  local f
+  for f in "$@"; do
+    [[ "${f}" != *'#'* ]] || return 1
+    case "${f,,}" in
+      *.png | *.jpg | *.jpeg | *.gif | *.webp | *.mp4 | *.mov | *.webm) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# Prepare a body for `gh --attach`, which rewrites a reference only when it
+# names the exact path passed to --attach: point basename references at that
+# path, and reference every other file on its own line so it lands above the
+# signature instead of after it.
+reference_attachments_in_body() {
+  local body_file="$1"; shift
+  local content="" f base
+  [[ -s "${body_file}" ]] && content="$(cat "${body_file}")"
+  local -a unreferenced=()
+  for f in "$@"; do
+    base="$(basename -- "${f}")"
+    if [[ "${content}" != *"](${f})"* && "${content}" == *"](${base})"* ]]; then
+      content="${content//"](${base})"/"](${f})"}"
+    fi
+    [[ "${content}" == *"](${f})"* ]] || unreferenced+=("![${base}](${f})")
+  done
+  [[ -n "${content}" ]] && printf '%s\n' "${content}" >"${body_file}"
+  if ((${#unreferenced[@]})); then
+    append_image_separator "${body_file}"
+    printf '%s\n' "${unreferenced[@]}" >>"${body_file}"
+  fi
+}
+
 # HTTP status GitHub returns for one attachment URL. The token rides in a header
 # read from stdin so it never appears in curl's process arguments.
 attachment_status() {
@@ -859,7 +897,8 @@ cmd_comment() {
       -h | --help)
         cat <<'USAGE'
 Usage: issue-tracker.sh comment <issue> [--body TEXT | --body-file FILE] [--image FILE ...] [--sign WHO] [--repo R] --yes
-  Posts an issue comment. Repeat --image to upload images with gh-image.
+  Posts an issue comment. Repeat --image to attach images: through gh's own
+  --attach (gh >= 2.99) when it takes every file, otherwise with gh-image.
   Image-only comments are allowed.
 
   Inline placement: reference an image in the body with the SAME path you pass
@@ -908,7 +947,7 @@ USAGE
 
   if ((dry_run)); then
     if ((image_count)); then
-      printf '+ gh image --repo %q' "${repo}"
+      printf '+ attach with gh issue comment --attach when gh takes every file; otherwise gh image --repo %q' "${repo}"
       printf ' %q' "${image_paths[@]}"
       printf '\n'
     fi
@@ -922,14 +961,21 @@ USAGE
   fi
   require_gh_auth "${repo}"
 
-  # Upload images first (if any) so a failed upload aborts before we post.
-  local uploaded_markdown=""
+  # Attach natively when gh can take every file. Otherwise upload with gh-image
+  # first, so a failed upload aborts before we post.
+  local uploaded_markdown="" native=0
+  local -a attach_args=()
   if ((image_count)); then
-    require_gh_image_session
-    if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
-      die "one or more image uploads failed; comment was not posted"
+    if native_attach_ok comment "${image_paths[@]}"; then
+      native=1
+      for image_path in "${image_paths[@]}"; do attach_args+=(--attach "${image_path}"); done
+    else
+      require_gh_image_session
+      if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
+        die "one or more image uploads failed; comment was not posted"
+      fi
+      [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; comment was not posted"
     fi
-    [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; comment was not posted"
   fi
 
   # Compose the final body: base text, then image markdown, then the signature.
@@ -946,11 +992,12 @@ USAGE
   if [[ -n "${uploaded_markdown}" ]]; then
     apply_images_to_body "${tmp_body}" "${uploaded_markdown}" "${image_paths[@]}"
   fi
+  ((native)) && reference_attachments_in_body "${tmp_body}" "${image_paths[@]}"
   append_signature "${tmp_body}" "${signature}"
 
   log "Commenting on ${repo}#${num}"
   local posted_url
-  posted_url="$(gh issue comment "${num}" -R "${repo}" --body-file "${tmp_body}")" \
+  posted_url="$(gh issue comment "${num}" -R "${repo}" --body-file "${tmp_body}" "${attach_args[@]}")" \
     || { local rc=$?; rm -f "${tmp_body}"; return "${rc}"; }
   rm -f "${tmp_body}"
   printf '%s\n' "${posted_url}"
@@ -1281,7 +1328,7 @@ Usage: issue-tracker.sh create --title TEXT [--body TEXT | --body-file FILE]
 
   Open a new issue. --area / --status attach managed area and status labels;
   --label attaches arbitrary labels. Missing labels are created.
-  Repeat --image to upload screenshots with gh-image. An image referenced in
+  Repeat --image to attach screenshots (gh --attach, else gh-image). An image referenced in
   the body by the path you pass to --image (or its basename) is rewritten to
   the uploaded URL in place; any --image not referenced inline is appended.
 
@@ -1334,7 +1381,7 @@ USAGE
 
   if ((dry_run)); then
     if ((${#image_paths[@]})); then
-      printf '+ gh image --repo %q' "${repo}"
+      printf '+ attach with gh issue create --attach when gh takes every file; otherwise gh image --repo %q' "${repo}"
       printf ' %q' "${image_paths[@]}"
       printf '\n'
     fi
@@ -1356,14 +1403,21 @@ USAGE
   fi
   require_gh_auth "${repo}"
 
-  # Upload images first (if any) so a failed upload aborts before we create.
-  local uploaded_markdown=""
+  # Attach natively when gh can take every file. Otherwise upload with gh-image
+  # first, so a failed upload aborts before we create.
+  local uploaded_markdown="" native=0
+  local -a attach_args=()
   if ((${#image_paths[@]})); then
-    require_gh_image_session
-    if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
-      die "one or more image uploads failed; issue was not created"
+    if native_attach_ok create "${image_paths[@]}"; then
+      native=1
+      for image_path in "${image_paths[@]}"; do attach_args+=(--attach "${image_path}"); done
+    else
+      require_gh_image_session
+      if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
+        die "one or more image uploads failed; issue was not created"
+      fi
+      [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; issue was not created"
     fi
-    [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; issue was not created"
   fi
 
   # Compose the body: base text, then image markdown, then the signature.
@@ -1380,6 +1434,7 @@ USAGE
   if [[ -n "${uploaded_markdown}" ]]; then
     apply_images_to_body "${tmp_body}" "${uploaded_markdown}" "${image_paths[@]}"
   fi
+  ((native)) && reference_attachments_in_body "${tmp_body}" "${image_paths[@]}"
   append_signature "${tmp_body}" "${signature}"
 
   # Create any labels that may not exist yet (no --force; existing labels keep
@@ -1394,7 +1449,7 @@ USAGE
     gh label create "${status_name}" -R "${repo}" -c "$(status_color "${status_name}")" -d "Status: ${status_name}" >/dev/null 2>&1 || true
   fi
 
-  local -a create_args=(--title "${title}" --body-file "${tmp_body}")
+  local -a create_args=(--title "${title}" --body-file "${tmp_body}" "${attach_args[@]}")
   for l in "${attach_labels[@]}"; do create_args+=(--label "${l}"); done
   local a
   for a in "${assignees[@]}"; do create_args+=(--assignee "${a}"); done

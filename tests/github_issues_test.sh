@@ -75,7 +75,26 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   'issue create'|'issue comment')
+    if [[ " $* " == *' --help '* ]]; then
+      # gh >= 2.99 documents --attach; older gh does not.
+      [ "${GH_FAKE_ATTACH:-0}" != 1 ] || printf '%s\n' '      --attach file      Attach an image or video file'
+      exit 0
+    fi
     copy_body_file "$@"
+    # Like gh --attach: rewrite references to the exact attached path, append the rest.
+    previous=''
+    for arg in "$@"; do
+      if [ "${previous}" = '--attach' ]; then
+        asset="https://github.com/user-attachments/assets/native-$(basename -- "${arg}")"
+        body="$(cat "${GH_CAPTURE_BODY}")"
+        if [[ "${body}" == *"](${arg})"* ]]; then
+          printf '%s\n' "${body//"](${arg})"/"](${asset})"}" >"${GH_CAPTURE_BODY}"
+        else
+          printf '![%s](%s)\n' "$(basename -- "${arg}")" "${asset}" >>"${GH_CAPTURE_BODY}"
+        fi
+      fi
+      previous="${arg}"
+    done
     if [ "$2" = comment ]; then
       printf '%s\n' 'https://github.com/owner/project/issues/7#issuecomment-555'
     else
@@ -177,7 +196,7 @@ new_case() {
   : >"${CURL_FAKE_LOG}"
   export CASE_DIR GH_FAKE_LOG CURL_FAKE_LOG GH_CAPTURE_BODY
   unset GH_FAKE_MODE GH_FAKE_LABELS GH_FAKE_JSON GH_FAKE_REPO
-  unset GH_FAKE_LIST_JSON GH_FAKE_RESOLVED_JSON GH_FAKE_TRACKED_JSON CURL_FAKE_STATUSES
+  unset GH_FAKE_LIST_JSON GH_FAKE_RESOLVED_JSON GH_FAKE_TRACKED_JSON CURL_FAKE_STATUSES GH_FAKE_ATTACH
   export ISSUE_TRACKER_ASSET_DELAY=0 ISSUE_TRACKER_ASSET_CHECKS=3
 }
 
@@ -328,6 +347,50 @@ test_posted_attachments_are_verified_before_success() {
   assert_contains "${RUN_OUTPUT}" 'HTTP 404  https://github.com/user-attachments/assets/aaa'
   CURL_FAKE_STATUSES='302' capture "${TRACKER}" verify 'https://github.com/owner/project/issues/7#issuecomment-555'
   assert_eq 0 "${RUN_STATUS}"
+}
+
+test_native_attach_is_preferred_when_gh_takes_every_file() {
+  new_case
+  export GH_FAKE_ATTACH=1
+  printf '%s' 'png' >"${CASE_DIR}/inline.png"
+  printf '%s' 'png' >"${CASE_DIR}/extra.png"
+
+  capture env -C "${CASE_DIR}" "${TRACKER}" comment 7 --body 'before ![shot](inline.png) after' \
+    --image "${CASE_DIR}/inline.png" --image "${CASE_DIR}/extra.png" \
+    --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  local log body
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" "--attach ${CASE_DIR}/inline.png --attach ${CASE_DIR}/extra.png"
+  assert_not_contains "${log}" 'image --repo'
+  body="$(cat "${GH_CAPTURE_BODY}")"
+  # The basename reference was pointed at the attached path, so gh placed it inline.
+  assert_contains "${body}" 'before ![shot](https://github.com/user-attachments/assets/native-inline.png) after'
+  # An unreferenced file sits above the signature, not after it.
+  local image_line signature_line
+  image_line="$(grep -n 'native-extra.png' "${GH_CAPTURE_BODY}" | cut -d: -f1)"
+  signature_line="$(grep -n 'posted by Test Agent' "${GH_CAPTURE_BODY}" | cut -d: -f1)"
+  [ -n "${image_line}" ] && [ "${image_line}" -lt "${signature_line}" ] || fail 'unreferenced attachment is not above the signature'
+  assert_contains "${RUN_OUTPUT}" '2 attachment(s) served'
+
+  # A file gh cannot attach sends the whole upload through gh-image.
+  new_case
+  export GH_FAKE_ATTACH=1
+  printf '%s' 'pdf' >"${CASE_DIR}/report.pdf"
+  capture "${TRACKER}" create --title T --body 'x' --image "${CASE_DIR}/report.pdf" \
+    --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "$(cat "${GH_FAKE_LOG}")" "image --repo owner/project ${CASE_DIR}/report.pdf"
+  assert_not_contains "$(cat "${GH_FAKE_LOG}")" '--attach'
+
+  # So does a path with `#`, which gh would read as alt text.
+  new_case
+  export GH_FAKE_ATTACH=1
+  printf '%s' 'png' >"${CASE_DIR}/shot#1.png"
+  capture "${TRACKER}" comment 7 --body 'x' --image "${CASE_DIR}/shot#1.png" \
+    --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "$(cat "${GH_FAKE_LOG}")" 'image --repo owner/project'
 }
 
 test_status_and_area_read_failure_precedes_writes() {
@@ -576,6 +639,7 @@ run_test 'discovers the canonical upstream repository first' test_repository_dis
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
 run_test 'uploads with gh-image without its -- separator' test_gh_image_upload_survives_its_separator_change
 run_test 'verifies posted attachments are served' test_posted_attachments_are_verified_before_success
+run_test 'prefers gh --attach when gh takes every file' test_native_attach_is_preferred_when_gh_takes_every_file
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'archives only inactive resolved/tracked-elsewhere issues' test_archive_closes_only_inactive_terminal_issues
