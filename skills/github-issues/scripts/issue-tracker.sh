@@ -1533,17 +1533,29 @@ DOC
     fails=$((fails + 1))
   fi
 
-  # 2. gh-image extension installed. Token + upload checks below need it.
+  # 2. gh's own --attach (gh >= 2.99) carries image and video attachments. With
+  # it, gh-image and its browser session are needed only for other files.
+  local native=0
+  if gh issue comment --help 2>/dev/null | grep -q -- '--attach'; then
+    printf '  ok    gh --attach available (images and videos attach with the gh login)\n'
+    native=1
+  else
+    printf '  note  gh has no --attach (needs gh 2.99+); every upload goes through gh-image\n'
+  fi
+
+  # 3. gh-image extension installed. Token + upload checks below need it.
   local have_image=0
   if gh image --help >/dev/null 2>&1; then
     printf '  ok    gh-image extension installed\n'
     have_image=1
+  elif ((native)); then
+    printf '  note  gh-image not installed; needed only for non-image files — gh extension install drogers0/gh-image\n'
   else
     printf '  FAIL  gh-image not installed — run: gh extension install drogers0/gh-image\n'
     fails=$((fails + 1))
   fi
 
-  # 3. A GitHub web session token must resolve. Mirror require_gh_image_session:
+  # 4. A GitHub web session token must resolve. Mirror require_gh_image_session:
   # try tokenless extraction first (browser / exported var stays primary), then
   # fall back to the skill's .env. Report which path won.
   local token_ok=0
@@ -1567,13 +1579,18 @@ DOC
       fi
     fi
     if ((! token_ok)); then
-      printf '  FAIL  no valid web session token (browser extraction failed, no working .env)\n'
+      if ((native)); then
+        printf '  note  no valid web session token; gh-image uploads of non-image files will fail\n'
+      else
+        printf '  FAIL  no valid web session token (browser extraction failed, no working .env)\n'
+        fails=$((fails + 1))
+      fi
       printf '        fallback: cp %s/.env.example %s and set GH_SESSION_TOKEN (see that file)\n' "${SKILL_DIR}" "${ENV_FILE}"
-      fails=$((fails + 1))
     fi
   fi
 
-  # 4. Optional real upload — the only 100% check, but it's an outward write.
+  # 5. Optional real upload — the only end-to-end check, but it's an outward
+  # write. A returned URL is not enough: the asset must actually be served.
   if ((do_live)); then
     if ((! token_ok)); then
       printf '  skip  live upload — no valid token to upload with\n'
@@ -1585,12 +1602,28 @@ DOC
       # 1x1 transparent PNG so GitHub accepts the attachment.
       printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\n' \
         | base64 -d >"${img}" 2>/dev/null || true
-      if out="$(gh_image_upload "${repo}" "${img}" 2>/dev/null)" \
-        && grep -qiE 'user-attachments/assets/|githubusercontent' <<<"${out}"; then
-        printf '  ok    live upload to %s succeeded\n' "${repo}"
-      else
+      local url="" code="" attempt token
+      if out="$(gh_image_upload "${repo}" "${img}" 2>/dev/null)"; then
+        url="$(grep -oE "https://${host//./\\.}/user-attachments/assets/[A-Za-z0-9._-]+" <<<"${out}" | head -1)"
+      fi
+      if [[ -z "${url}" ]]; then
         printf '  FAIL  live upload to %s failed\n' "${repo}"
         fails=$((fails + 1))
+      else
+        # An unposted asset is visible only to its uploader, so probe with the token.
+        token="$(gh auth token --hostname "${host}" 2>/dev/null || true)"
+        for ((attempt = 1; attempt <= ${ISSUE_TRACKER_ASSET_CHECKS:-6}; attempt++)); do
+          code="$(attachment_status "${url}" "${token}")"
+          [[ "${code}" == 200 || "${code}" == 302 ]] && break
+          ((attempt < ${ISSUE_TRACKER_ASSET_CHECKS:-6})) && sleep "${ISSUE_TRACKER_ASSET_DELAY:-10}"
+        done
+        if [[ "${code}" == 200 || "${code}" == 302 ]]; then
+          printf '  ok    live upload to %s is served\n' "${repo}"
+        else
+          printf '  FAIL  live upload to %s returned a URL that is not served (HTTP %s): %s\n' "${repo}" "${code:-000}" "${url}"
+          printf '        GitHub may be delaying attachments; check https://www.githubstatus.com\n'
+          fails=$((fails + 1))
+        fi
       fi
       rm -f "${img}"
     fi

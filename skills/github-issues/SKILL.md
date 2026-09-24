@@ -127,9 +127,16 @@ the file again.
 
 ## Diagnose image-upload failures
 
-Run `"$TRACKER" doctor --repo owner/repo` on the host first. CLI authentication
-and a browser web session are separate checks; a valid `gh` login does not
-prove browser-cookie extraction works. Inspect `gh image --version` when
+Run `"$TRACKER" doctor --repo owner/repo` on the host first. When it reports
+`gh --attach` available, images and videos attach with the `gh` login, and
+gh-image or browser-session problems affect only other files. CLI
+authentication and a browser web session are separate checks; a valid `gh`
+login does not prove browser-cookie extraction works.
+
+When an upload returns a URL that is not served, whether in a post's
+verification or in `doctor --live`, look for a GitHub incident before changing
+tools, cookies, or credentials. Both upload routes can fail this way together,
+and the delayed files may appear hours later without any local change. Inspect `gh image --version` when
 `check-token` reports an empty session or `net/http` warns about invalid cookie
 bytes. Those symptoms alone do not prove the browser session expired.
 
@@ -145,8 +152,8 @@ printing the cookie. Avoid `extract-token`, which exposes it.
 When repairing the installed tool is authorized, retain a rollback copy and
 install the verified working binary. Re-run `doctor`, then verify a real upload
 using the already-requested, inspected screenshots. `doctor --live --yes`
-creates an orphan diagnostic asset; prefer the intended proof upload when one
-is pending. Read back the issue to confirm its attachments, and record recovery
+creates an orphan diagnostic asset and passes only once GitHub serves it; prefer
+the intended proof upload when one is pending. Read back the issue to confirm its attachments, and record recovery
 in the related child issue. Keep local proof files until upload succeeds.
 
 ## Work an issue

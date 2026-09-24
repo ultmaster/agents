@@ -393,6 +393,27 @@ test_native_attach_is_preferred_when_gh_takes_every_file() {
   assert_contains "$(cat "${GH_FAKE_LOG}")" 'image --repo owner/project'
 }
 
+test_doctor_reports_attach_and_requires_a_served_live_upload() {
+  new_case
+  export GH_FAKE_ATTACH=1
+
+  capture "${TRACKER}" doctor --repo owner/project
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" 'gh --attach available'
+
+  # A live upload that returns a URL GitHub does not serve is a failure.
+  CURL_FAKE_STATUSES='404' capture "${TRACKER}" doctor --repo owner/project --live --yes
+  [ "${RUN_STATUS}" -ne 0 ] || fail 'doctor passed a live upload that is not served'
+  assert_contains "${RUN_OUTPUT}" 'returned a URL that is not served (HTTP 404)'
+  assert_contains "${RUN_OUTPUT}" 'githubstatus.com'
+  assert_not_contains "$(cat "${CURL_FAKE_LOG}")" 'fake-secret-token'
+
+  : >"${CURL_FAKE_LOG}.count"
+  CURL_FAKE_STATUSES='404 302' capture "${TRACKER}" doctor --repo owner/project --live --yes
+  assert_eq 0 "${RUN_STATUS}"
+  assert_contains "${RUN_OUTPUT}" 'live upload to owner/project is served'
+}
+
 test_status_and_area_read_failure_precedes_writes() {
   new_case
   export GH_FAKE_MODE=fail-label-read
@@ -640,6 +661,7 @@ run_test 'composes signed plain and inline-image bodies' test_signed_body_and_in
 run_test 'uploads with gh-image without its -- separator' test_gh_image_upload_survives_its_separator_change
 run_test 'verifies posted attachments are served' test_posted_attachments_are_verified_before_success
 run_test 'prefers gh --attach when gh takes every file' test_native_attach_is_preferred_when_gh_takes_every_file
+run_test 'doctor checks --attach and that a live upload is served' test_doctor_reports_attach_and_requires_a_served_live_upload
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'archives only inactive resolved/tracked-elsewhere issues' test_archive_closes_only_inactive_terminal_issues
