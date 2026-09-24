@@ -49,8 +49,15 @@ case "${1:-} ${2:-}" in
   'image --help') printf '%s\n' 'fake gh-image help'; exit 0 ;;
   'image check-token') printf '%s\n' 'fake-agent'; exit 0 ;;
   'image --repo')
-    image_path="${!#}"
-    printf '![%s](https://github.com/user-attachments/assets/fake-upload)\n' "$(basename -- "${image_path}")"
+    # gh-image >= 1.4 reads everything after `--` as a gh command to run, and
+    # a bare argument starting with `-` as a flag.
+    for arg in "${@:4}"; do
+      [ "${arg}" != '--' ] || { printf '%s\n' 'fake gh-image: -- starts a gh command' >&2; exit 2; }
+      case "${arg}" in -*) printf 'fake gh-image: unknown flag %s\n' "${arg}" >&2; exit 2 ;; esac
+    done
+    for image_path in "${@:4}"; do
+      printf '![%s](https://github.com/user-attachments/assets/fake-upload)\n' "$(basename -- "${image_path}")"
+    done
     exit 0
     ;;
   'issue view')
@@ -242,6 +249,22 @@ test_signed_body_and_inline_image_composition() {
   assert_contains "${body}" 'before ![shot](https://github.com/user-attachments/assets/fake-upload) after'
   assert_not_contains "${body}" "${image_path}"
   assert_contains "${body}" '_— posted by Test Agent (via the issue-tracker skill)_'
+}
+
+test_gh_image_upload_survives_its_separator_change() {
+  new_case
+
+  # gh-image 1.4 turned `--` into "run this gh command"; the upload must pass
+  # files as plain arguments and protect a name that starts with a dash.
+  printf '%s' 'png' >"${CASE_DIR}/-dash.png"
+  capture env -C "${CASE_DIR}" "${TRACKER}" comment 7 --body 'see ![s](-dash.png)' \
+    --image -dash.png --sign 'Test Agent' --repo owner/project --yes
+  assert_eq 0 "${RUN_STATUS}"
+  local log
+  log="$(cat "${GH_FAKE_LOG}")"
+  assert_contains "${log}" 'image --repo owner/project ./-dash.png'
+  assert_not_contains "${log}" ' -- '
+  assert_contains "$(cat "${GH_CAPTURE_BODY}")" 'see ![s](https://github.com/user-attachments/assets/fake-upload)'
 }
 
 test_status_and_area_read_failure_precedes_writes() {
@@ -488,6 +511,7 @@ run_test 'validates dry runs, signatures, and write confirmation' test_validatio
 run_test 'names the sandbox before blaming a GitHub login' test_auth_failure_names_the_sandbox_before_a_login
 run_test 'discovers the canonical upstream repository first' test_repository_discovery_prefers_upstream
 run_test 'composes signed plain and inline-image bodies' test_signed_body_and_inline_image_composition
+run_test 'uploads with gh-image without its -- separator' test_gh_image_upload_survives_its_separator_change
 run_test 'aborts status/area replacement when label reads fail' test_status_and_area_read_failure_precedes_writes
 run_test 'replaces only managed status and area labels' test_managed_label_replacement
 run_test 'archives only inactive resolved/tracked-elsewhere issues' test_archive_closes_only_inactive_terminal_issues

@@ -122,6 +122,20 @@ GHIMAGE
   exit 1
 }
 
+# Upload files with gh-image and print its markdown, one `![name](url)` line per
+# file. Pass files as plain arguments: gh-image 1.4 reads everything after `--`
+# as a gh command, so a name starting with a dash is written as ./name instead.
+gh_image_upload() {
+  local repo="$1"; shift
+  local -a files=()
+  local f
+  for f in "$@"; do
+    [[ "${f}" == -* ]] && f="./${f}"
+    files+=("${f}")
+  done
+  gh image --repo "${repo}" "${files[@]}"
+}
+
 repo_host() {
   local repo="$1"
   if [[ "${repo}" == */*/* ]]; then
@@ -817,7 +831,7 @@ USAGE
 
   if ((dry_run)); then
     if ((image_count)); then
-      printf '+ gh image --repo %q --' "${repo}"
+      printf '+ gh image --repo %q' "${repo}"
       printf ' %q' "${image_paths[@]}"
       printf '\n'
     fi
@@ -835,7 +849,7 @@ USAGE
   local uploaded_markdown=""
   if ((image_count)); then
     require_gh_image_session
-    if ! uploaded_markdown="$(gh image --repo "${repo}" -- "${image_paths[@]}")"; then
+    if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
       die "one or more image uploads failed; comment was not posted"
     fi
     [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; comment was not posted"
@@ -1239,7 +1253,7 @@ USAGE
 
   if ((dry_run)); then
     if ((${#image_paths[@]})); then
-      printf '+ gh image --repo %q --' "${repo}"
+      printf '+ gh image --repo %q' "${repo}"
       printf ' %q' "${image_paths[@]}"
       printf '\n'
     fi
@@ -1265,7 +1279,7 @@ USAGE
   local uploaded_markdown=""
   if ((${#image_paths[@]})); then
     require_gh_image_session
-    if ! uploaded_markdown="$(gh image --repo "${repo}" -- "${image_paths[@]}")"; then
+    if ! uploaded_markdown="$(gh_image_upload "${repo}" "${image_paths[@]}")"; then
       die "one or more image uploads failed; issue was not created"
     fi
     [[ -n "${uploaded_markdown}" ]] || die "image upload produced no markdown; issue was not created"
@@ -1405,7 +1419,7 @@ DOC
       # 1x1 transparent PNG so GitHub accepts the attachment.
       printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\n' \
         | base64 -d >"${img}" 2>/dev/null || true
-      if out="$(gh image --repo "${repo}" -- "${img}" 2>/dev/null)" \
+      if out="$(gh_image_upload "${repo}" "${img}" 2>/dev/null)" \
         && grep -qiE 'user-attachments/assets/|githubusercontent' <<<"${out}"; then
         printf '  ok    live upload to %s succeeded\n' "${repo}"
       else
