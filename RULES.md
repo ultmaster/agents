@@ -19,6 +19,11 @@
 
 ## Git and GitHub
 
+- Work and commit directly on the project's mainline branch by default;
+  identify it from project instructions and Git metadata rather than assuming
+  it is named `main`. Create a new branch only when the user explicitly asks
+  for one or requests a pull request. Continue user-directed branch or pull
+  request work on that task's intended branch.
 - Confirm the repository root and intended branch before committing. A checkout
   is not evidence of which branch owns the work, and the same repository may be
   checked out more than once.
