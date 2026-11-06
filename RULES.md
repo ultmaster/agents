@@ -9,6 +9,14 @@
 - Prefer the smallest coherent design with one clear owner for each behavior.
   Before adding an abstraction or a second representation of the same concept,
   say what problem it solves and why an existing owner cannot.
+- When reviewing architecture, also check for overengineering, unjustified
+  asymmetry, duplicated components or implementations, and confusing interfaces
+  or names alongside the usual review criteria.
+- Make interfaces, types, API contracts, database tables, and similar shared
+  definitions self-explanatory for human review. Add detailed comments explaining
+  their purpose and field meanings, including units, invariants, optionality,
+  and non-obvious behavior where applicable. Keep comments consistent with the
+  implementation.
 - Update an existing plan, proposal, or spec in place. Do not leave a parallel
   one behind unless asked for a new durable artifact.
 - Before reporting an environment blocker, inspect the project's tooling and try
@@ -27,7 +35,15 @@
 - Confirm the repository root and intended branch before committing. A checkout
   is not evidence of which branch owns the work, and the same repository may be
   checked out more than once.
+- Commit completed, verified task changes by default unless the user asks to
+  leave them uncommitted. Keep unrelated changes out of those commits. Split
+  large changes into several coherent, focused commits so each part is clear
+  to review.
 - Review the real base/head diff and history, not the pull request description.
+- When asked to review work that is already in a pull request, always post a PR
+  comment recording the reviewed head commit, scope, findings, and verification
+  limits, even when there are no findings. Include the comment link in the final
+  response so the review is easy to track.
 - Check remotes before opening a pull request. Where a canonical `upstream`
   exists, target it and use the fork only as the head remote.
 - In Codex, run `gh` outside the sandbox — reads included, and for scripts that
@@ -36,7 +52,14 @@
   (`sandbox_permissions=require_escalated`) rather than reporting a login
   problem.
 - Treat committing, pushing, and opening a pull request as separate actions and
-  report their states precisely. Do not push or publish without authorization.
+  report their states precisely.
+- Unless the user gives different push instructions, push completed commits
+  when the repository has had fewer than three pushes in the preceding 24
+  hours. Check push activity rather than commit counts. At three or more pushes,
+  keep the commits local and wait for a batch or an explicit push request. If
+  push activity cannot be established, keep the commits local and say so. This
+  default authorizes Git pushes only; other publication still needs
+  authorization.
 
 ## Skills and private state
 
