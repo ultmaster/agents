@@ -397,7 +397,8 @@ test_native_attach_is_preferred_when_gh_takes_every_file() {
   local image_line signature_line
   image_line="$(grep -n 'native-extra.png' "${GH_CAPTURE_BODY}" | cut -d: -f1)"
   signature_line="$(grep -n 'posted by Test Agent' "${GH_CAPTURE_BODY}" | cut -d: -f1)"
-  [ -n "${image_line}" ] && [ "${image_line}" -lt "${signature_line}" ] || fail 'unreferenced attachment is not above the signature'
+  [ -n "${image_line}" ] || fail 'unreferenced attachment is not above the signature'
+  [ "${image_line}" -lt "${signature_line}" ] || fail 'unreferenced attachment is not above the signature'
   assert_contains "${RUN_OUTPUT}" '2 attachment(s) served'
 
   # A file gh cannot attach sends the whole upload through gh-image.
