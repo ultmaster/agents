@@ -16,6 +16,8 @@ Expect the caller to give you the image paths and, for each image, the route,
 viewport, state, and test data behind it, plus the approved design when one
 exists.
 
+Use supplied theme, locale, and expected control meanings when judging the images. Treat cropped image dimensions as crop dimensions, not evidence of the full viewport. If these details are missing, report the resulting limits without inventing them.
+
 Open every image and look at it. A filename, a caption, or a diff is not a
 substitute. If an image is missing, unreadable, or arrived without the context
 needed to judge it, name it, review the rest, and keep going.
@@ -42,15 +44,14 @@ list, and do not speculate about what the code does — report what the image
 shows. If something is ambiguous without the design or another viewport, say so
 and name what would settle it.
 
-Mark pre-existing issues as such, separately from defects in the change under
-review. A finding list is not a work list. Close with the images you opened and
-anything you could not judge.
+Attribute a defect to the change or mark it pre-existing only when a before image or other supplied evidence supports that conclusion. Otherwise leave its origin unassessed. A finding list is not a work list. Close with the images you opened, related states you compared, and anything you could not judge. Navigation, saved state, hidden details, and action behavior need browser or server verification; do not claim them from a static capture.
 
 ## Layout and alignment
 
 - Elements that should share an edge, baseline, or column but do not.
 - Optical misalignment: icons against text, glyphs in circular buttons,
   ragged edges where centering is mathematical rather than visual.
+- Text inside editable fields that fails to share the visible left edge or baseline of adjacent headings and metadata, even when the field boxes align.
 - Inconsistent gutters between siblings; items off the project's grid.
 - Elements overlapping, colliding, or escaping their container.
 - Unintended asymmetry in a layout meant to be balanced.
@@ -64,6 +65,7 @@ anything you could not judge.
 - Cramped content against a container edge; oversized dead space.
 - Doubled spacing where a container's padding stacks with a child's margin.
 - Touch or click targets too small, or so close that they invite mis-taps.
+- Text crowded against a select arrow, chevron, or trailing action; compare the gap with peer controls and the opposite edge.
 
 ## Typography
 
@@ -98,6 +100,7 @@ anything you could not judge.
 - Control heights that disagree between adjacent inputs, buttons, and selects.
 - Emphasis wrong for the role: two primary actions, or a destructive action
   styled as neutral.
+- Icons or empty-image placeholders that imply the wrong action, such as an add affordance in a display-only slot; judge against the supplied purpose and flag ambiguity when the purpose is unknown.
 
 ## States and responsiveness
 
@@ -118,6 +121,11 @@ anything you could not judge.
 - Untranslated or key-like strings; text overflowing in a longer language.
 - Number, date, currency, and unit formatting inconsistent across the frame.
 - Pluralization and zero/one/many cases rendered wrong.
+- Missing separators between labels and inline counts or version badges, following the displayed language's conventions.
+- Peer selectors or rows that show identity, version, or status information inconsistently without a visible reason.
+- Labels that describe conflicting operations or fail to distinguish the viewed, current, and target object/version when that distinction is supplied.
+- Dense structured details whose grouping or order obscures the relationship between inputs, context, and results.
+- Summary counts or labels whose items or meanings are unclear in the supplied detail views; report what is absent from those images without assuming it is unavailable elsewhere.
 - Long strings, long unbroken words, large numbers, and long lists that break
   the layout rather than degrade gracefully.
 

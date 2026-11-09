@@ -27,7 +27,7 @@ user-level discovery paths outside the checkout.
 | `github-actions` | Reproduce, inspect, dispatch, and diagnose workflow runs. |
 | `github-issues` | Work GitHub issues as durable records and archive inactive terminal issues. |
 | `test-strategy` | Choose truthful test boundaries and verify changes at the right layers. |
-| `ui-work` | Design, implement, and prove visual changes in the running interface. |
+| `ui-work` | Design, implement, and review UI journeys with browser checklists and inspected screenshots. |
 | `windows-dev` | Diagnose shell, filesystem, build, and process failures on Windows and WSL. |
 
 These names are deliberately concrete. A skill installed at user scope applies in

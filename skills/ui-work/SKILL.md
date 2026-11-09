@@ -1,6 +1,6 @@
 ---
 name: ui-work
-description: Design, implement, and verify visual UI changes in any repository. Use for new or redesigned components, screens, dialogs, panels, navigation, responsive or empty/error/loading states, interactions, and visual bug fixes, and whenever asked to verify, QA, or provide proof for how something renders - including backend changes that affect the UI. Sketch in whatever design surface the project uses, or start from an approved design when one already exists, and get approval while a real visual choice remains; implement from the approved design, then prove the result in the running application with inspected screenshots. Tests alone are never visual proof.
+description: Design, implement, review, and verify UI behavior and rendering in any repository. Use for components, screens, dialogs, navigation, responsive and empty/error/loading states, interactions, visual bug fixes, and UI reviews or QA, including backend changes that affect the UI. Use approved designs where available, seek approval for unresolved visual choices, and verify user journeys in a real browser with an explicit checklist and inspected screenshots. Tests alone are never visual proof.
 ---
 
 # UI Work
@@ -13,6 +13,8 @@ and an approval round. A new surface, a layout or hierarchy change, or anything
 with two reasonable renderings needs the whole loop. When you skip steps, say
 which and why rather than pretending the loop ran.
 
+For a review or audit, discover the intended behavior and proceed to verification. Report findings within the requested scope; redesign or implementation requires the user's request to include that work.
+
 ## 1. Discover
 
 Inspect local instructions and the codebase for:
@@ -23,7 +25,9 @@ Inspect local instructions and the codebase for:
 - component libraries, stories, screenshots, and existing surfaces;
 - semantic color, spacing, type, radius, motion, and breakpoint tokens;
 - accessibility and platform conventions;
-- how the application runs locally, its authentication flow, and its fixtures.
+- how the application runs locally, its authentication flow, and its fixtures;
+- the user journeys and vocabulary the affected surface must support, including what its actions change, which version or object they target, and how users inspect the source or details behind a summary;
+- whether the proposed browser target and its databases, object storage, workers, and external services are production or test resources.
 
 Use the design system as the default vocabulary. Create a new primitive only
 when existing parts cannot express the design, and never invent an
@@ -79,22 +83,19 @@ Automated checks prove code behavior; the running application proves
 integration; an inspected screenshot proves the rendered result; comparison with
 the approved design proves intent. A passing suite is not visual proof.
 
+Before browsing, make a checklist from the reported problem, affected user journeys, and consumers of changed shared components. For each check, record the route, fixture, action, expected result, and relevant viewport, theme, and locale. Include the states that expose the defect: new and existing objects, empty and populated content, current and historical versions, and expanded details where applicable. Track passed, failed, and unrun checks; a screenshot of the default state does not cover the rest.
+
 1. Run the narrowest relevant automated tests, adding a regression test when the
    change warrants one, then the repository's lint and type checks.
-2. Use an already-running application or launch an isolated one. Never treat a
-   process as yours because its command or port looks familiar, and never stop
-   an application you did not launch.
-3. Drive the real UI to every state the change can affect. Follow the project's
-   authentication and fixture instructions; never invent credentials or a login
-   bypass.
-4. Capture screenshots and have every one of them inspected (below), recording
-   the route, viewport, test data, and state that reproduces each image.
+2. Confirm the target environment and its dependencies before reusing a running application or launching one. Keep production probes read-only; use isolated test storage and dependencies for fixture creation, uploads, jobs, saves, and other mutations. A local frontend connected to production APIs is still production. Never treat a process as yours because its command or port looks familiar, and never stop an application you did not launch.
+3. Execute the checklist through the real UI, including nested menus, dialogs, expanded images, and detail views. Follow the project's authentication and fixture instructions; never invent credentials or a login bypass. Where a journey changes state, verify the target object/version, the visible result, and persistence after reload or navigation. Compare with server state when needed to distinguish a presentation defect from a save or lifecycle defect.
+4. Capture screenshots and have every one of them inspected (below), recording the route, viewport, theme, locale, test data, and state that reproduces each image. Capture relevant shared-component consumers and use close views for fine alignment or spacing without losing the surrounding layout.
 5. Compare the result against the approved design, reference render, or
    design-system example. Report divergences instead of silently preferring
    either artifact.
-6. Tear down what you launched, leaving user-owned processes untouched. Report
-   the commands run, the paths exercised, the screenshots inspected, the design
-   comparison, and every limitation or skipped state.
+6. Re-run failed checks after a fix and inspect the new captures. Tear down what you launched, leaving user-owned processes untouched. Report the checklist outcomes, commands run, paths exercised, screenshots inspected, design comparison, and every limitation or skipped state.
+
+Review whether users can understand an action before taking it: what it does, which object or version it affects, and where its result appears. When a surface promises details or provenance, open it and check that counts resolve to identifiable items and that the relevant source content is available. Follow through on navigation and save behavior; static images cannot prove those interactions.
 
 ### Inspect every screenshot, in a subagent
 
@@ -106,6 +107,7 @@ delegate the looking rather than skipping it:
   criteria. Any subagent works otherwise; tell it what to look for.
 - Give it the image paths, the route/viewport/state behind each, and the
   approved design when one exists.
+- Include theme, locale, fixture details, and the expected meaning of controls or summaries. Ask it to compare related controls and content across images, including inline counts/version labels and empty placeholders. Keep behavioral and persistence checks with the agent driving the browser; the screenshot reviewer can establish only what the captures show.
 - Ask for findings as text: what is wrong, in which image, where in the frame,
   which rule or token it violates, and how severe it is.
 - Ask it to review, not to fix. Keep related screenshots in one pass so findings

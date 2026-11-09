@@ -1,4 +1,4 @@
 interface:
   display_name: "UI Work"
   short_description: "Design, build, and prove UI changes"
-  default_prompt: "Use $ui-work to design this UI change, implement it, and prove the result in the running interface."
+  default_prompt: "Use $ui-work to review or implement this UI as requested, verify its user journeys in a real browser, and inspect the rendered screenshots."
