@@ -8,6 +8,7 @@
 - Update existing plans, proposals, and specs in place unless the user asks for a new durable artifact.
 - Before reporting an environment blocker, inspect the project's tooling and try the documented path. If the sandbox denies execution, request the execution permission instead of reporting a missing host capability.
 - Run the verification the change actually needs, beyond the narrowest passing check. State plainly what remains unrun or unfinished.
+- During investigation, review, and verification, run only read-only probes against production. Do not create test records, upload files, run jobs, change configuration, or restart services there. Exercise mutations in an isolated test environment with separate storage and dependencies; a different port or disposable record does not make a production dependency safe to write to. A production change requires explicit user authorization for that change.
 
 ## Design and documentation
 
